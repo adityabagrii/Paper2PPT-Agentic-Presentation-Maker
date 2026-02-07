@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.6 - 2026-02-07
+- Robust slide title generation: retry/fix and fallback padding when LLM returns the wrong count.
+
 ## 0.5.5 - 2026-02-07
 - GUI: Save a default root directory from the sidebar.
 - GUI: Reuse cached LLM client between runs to reduce setup time.

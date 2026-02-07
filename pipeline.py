@@ -217,8 +217,29 @@ Summary: {summary}
             logger.error("RAW TAIL: %s", raw[-400:])
             raise RuntimeError("Could not extract slide_titles JSON.")
         obj = json.loads(js)
-        if len(obj.get("slide_titles", [])) != self.cfg.slide_count:
-            raise RuntimeError(f"slide_titles must have exactly {self.cfg.slide_count} entries")
+        titles = obj.get("slide_titles", [])
+        if len(titles) != self.cfg.slide_count:
+            fix_prompt = (
+                "Return ONLY valid JSON for the same schema. "
+                f"Ensure slide_titles has exactly {self.cfg.slide_count} items. "
+                "Keep deck_title and arxiv_id unchanged. "
+                "Here is the JSON to fix:\n"
+                + json.dumps(obj, ensure_ascii=False)
+            )
+            fixed = safe_invoke(logger, self.llm, fix_prompt, retries=6)
+            fixed_js = self.try_extract_json(fixed) or fixed
+            try:
+                obj = json.loads(fixed_js)
+                titles = obj.get("slide_titles", [])
+            except Exception:
+                titles = []
+            if len(titles) != self.cfg.slide_count:
+                logger.error("slide_titles count mismatch; applying fallback padding/truncation.")
+                # Fallback: pad or truncate to required length
+                base = titles if titles else [f"Slide {i+1}" for i in range(self.cfg.slide_count)]
+                if len(base) < self.cfg.slide_count:
+                    base += [f"Slide {i+1}" for i in range(len(base), self.cfg.slide_count)]
+                obj["slide_titles"] = base[: self.cfg.slide_count]
         return obj
 
     def make_slide(

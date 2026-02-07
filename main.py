@@ -25,7 +25,7 @@ except Exception:
     from pipeline import Pipeline, RunConfig
 
 logger = logging.getLogger("paper2ppt")
-VERSION = "0.5.5"
+VERSION = "0.5.6"
 
 
 def _requirements_path() -> Path | None:
