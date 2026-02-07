@@ -252,13 +252,14 @@ Initialize LLM
 Sanity checks
   |
   v
-Collect sources (arXiv/PDFs)
+Collect sources (arXiv/PDFs/URLs)
   |
   v
-Extract + flatten text
+Extract + flatten text per source
   |
   v
 Chunk + summarize (LLM)
+  - Multi-source: parallel chunk summarization
   |
   v
 Generate slide titles (LLM)
