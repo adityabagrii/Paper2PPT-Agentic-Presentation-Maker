@@ -25,7 +25,7 @@ except Exception:
     from pipeline import Pipeline, RunConfig
 
 logger = logging.getLogger("paper2ppt")
-VERSION = "0.4.5"
+VERSION = "0.5.0"
 
 
 def _requirements_path() -> Path | None:
@@ -68,12 +68,17 @@ def print_helper() -> None:
     print('  paper2ppt --arxiv "https://arxiv.org/abs/2602.05883" --slides 10 --bullets 4')
     print('  paper2ppt --pdf "/path/to/paper.pdf" --slides 10 --bullets 4')
     print('  paper2ppt --arxiv 1811.12432 --query "Compare this to prior work" --slides 10 --bullets 4')
+    print('  paper2ppt --arxiv "1811.12432,1707.06347" --slides 10 --bullets 4')
+    print('  paper2ppt --pdf-dir "/path/to/pdfs" --query "Compare methods" --slides 10 --bullets 4')
     print("")
     print("Defaults:")
     print("  Root runs dir: ~/paper2ppt_runs or $PAPER2PPT_ROOT_DIR")
     print("  Per-run structure: <root>/<paper_title_slug>/{work,outputs}")
     print("")
     print("Common options:")
+    print("  --arxiv LIST           One or more arXiv IDs/URLs")
+    print("  --pdf LIST             One or more local PDF paths")
+    print("  --pdf-dir PATH         Directory of PDFs")
     print("  --root-dir PATH        Override root runs directory")
     print("  --work-dir PATH        Override working directory")
     print("  --out-dir PATH         Override output directory")
@@ -89,11 +94,23 @@ def print_helper() -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Generate a Beamer slide deck from an arXiv paper.")
+    p = argparse.ArgumentParser(description="Generate a Beamer slide deck from arXiv papers or local PDFs.")
     p.add_argument("--version", action="version", version=f"paper2ppt {VERSION}")
-    src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--arxiv", help="arXiv link or ID (e.g., https://arxiv.org/abs/2602.05883)")
-    src.add_argument("--pdf", help="Path to a local PDF file")
+    p.add_argument(
+        "--arxiv",
+        action="append",
+        help="arXiv link or ID (repeatable or comma-separated list)",
+    )
+    p.add_argument(
+        "--pdf",
+        action="append",
+        help="Path to a local PDF file (repeatable or comma-separated list)",
+    )
+    p.add_argument(
+        "--pdf-dir",
+        action="append",
+        help="Directory containing PDFs (repeatable)",
+    )
     p.add_argument("--slides", type=int, required=True, help="Number of slides to generate")
     p.add_argument("--bullets", type=int, required=True, help="Number of bullets per slide")
     p.add_argument("--query", default="", help="User query to guide the presentation theme")
@@ -129,6 +146,31 @@ def _query_summary(query: str) -> str:
         return "Query"
     return "_".join(words[:2])
 
+
+def _split_list_args(values: list[str]) -> list[str]:
+    out: list[str] = []
+    for v in values:
+        if not v:
+            continue
+        s = v.strip()
+        if s.startswith("[") and s.endswith("]"):
+            s = s[1:-1]
+        parts = [p.strip() for p in s.replace(";", ",").split(",")]
+        out.extend([p for p in parts if p])
+    return out
+
+
+def _collect_pdfs(paths: list[str], dirs: list[str]) -> list[Path]:
+    pdfs: list[Path] = []
+    for p in _split_list_args(paths):
+        pdfs.append(Path(p).expanduser().resolve())
+    for d in _split_list_args(dirs):
+        dpath = Path(d).expanduser().resolve()
+        if dpath.exists() and dpath.is_dir():
+            pdfs.extend(sorted(dpath.glob("*.pdf")))
+    return pdfs
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "help":
         print_helper()
@@ -140,36 +182,46 @@ def main() -> int:
 
     ensure_requirements_installed()
 
-    arxiv_id = ""
-    if args.arxiv:
-        arxiv_id = extract_arxiv_id(args.arxiv)
+    arxiv_inputs = _split_list_args(args.arxiv or [])
+    pdf_paths = _collect_pdfs(args.pdf or [], args.pdf_dir or [])
+    if not arxiv_inputs and not pdf_paths:
+        logger.error("Provide at least one source via --arxiv, --pdf, or --pdf-dir.")
+        return 2
+
+    arxiv_ids: list[str] = []
+    if arxiv_inputs:
+        for a in arxiv_inputs:
+            arxiv_ids.append(extract_arxiv_id(a))
     api_key = os.environ.get("NVIDIA_API_KEY", "")
     if not api_key:
         logger.warning("NVIDIA_API_KEY is not set; proceeding without a key.")
 
     paper_title = ""
-    if args.arxiv:
+    if arxiv_ids:
         try:
-            meta = get_arxiv_metadata(arxiv_id)
-            paper_title = meta.get("title", arxiv_id)
+            meta = get_arxiv_metadata(arxiv_ids[0])
+            paper_title = meta.get("title", arxiv_ids[0])
         except Exception:
-            paper_title = arxiv_id
-    else:
-        paper_title = Path(args.pdf).stem
+            paper_title = arxiv_ids[0]
+    elif pdf_paths:
+        paper_title = pdf_paths[0].stem
 
     root_dir = args.root_dir or os.environ.get("PAPER2PPT_ROOT_DIR", "~/paper2ppt_runs")
     run_root = Path(root_dir).expanduser().resolve()
     run_name = _slugify(paper_title)
     if args.query:
-        run_name = f"Q-{_query_summary(args.query)}-{run_name}"
+        if len(arxiv_ids) + len(pdf_paths) > 1:
+            run_name = f"Q-{_query_summary(args.query)}-MultiSource"
+        else:
+            run_name = f"Q-{_query_summary(args.query)}-{run_name}"
     run_dir = run_root / run_name
 
     work_dir = Path(args.work_dir).expanduser().resolve() if args.work_dir else (run_dir / "work")
     out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else (run_dir / "outputs")
 
     cfg = RunConfig(
-        arxiv_id=arxiv_id or f"local:{paper_title}",
-        pdf_path=Path(args.pdf).expanduser().resolve() if args.pdf else None,
+        arxiv_ids=arxiv_ids,
+        pdf_paths=pdf_paths,
         work_dir=work_dir,
         out_dir=out_dir,
         slide_count=args.slides,

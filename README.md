@@ -1,5 +1,19 @@
-# Paper2ppt
-Generate a Beamer slide deck from an arXiv paper or a local PDF using an LLM. The input is an arXiv link/ID or a PDF path, number of slides, and bullets per slide.
+# Paper2ppt - An Agentic Workflow for Presentation Generation
+
+# Author
+Aditya Bagri  
+Email: adityabagrii.work@gmail.com  
+Academic: aditya22029@iiitd.ac.in
+-----
+Agentic CLI that turns arXiv papers and/or local PDFs into Beamer slide decks using LLMs. It supports query-guided presentations, optional web search with citations, figure insertion (arXiv only), speaker notes, and multi-source synthesis.
+
+## Highlights
+- arXiv and local PDF inputs (single or multiple)
+- Query-guided decks that answer a user question (not just summaries)
+- Optional web search with citations
+- Speaker notes and figure suggestions
+- Robust slide generation with retries
+- Organized run directories with logs and outlines
 
 ## Requirements
 - Python 3.10+
@@ -29,12 +43,12 @@ Help:
 paper2ppt help
 ```
 
-## Set Your NVIDIA API Key
-Get an NVIDIA API key:
+## Get an NVIDIA API Key
 1. Create or sign in to your NVIDIA account.
 2. Open the NVIDIA NIM portal and generate a new API key.
 3. Copy the key and store it securely.
 
+## Set Your NVIDIA API Key
 Export the key in your terminal so the CLI can read it:
 ```bash
 export NVIDIA_API_KEY="YOUR_KEY_HERE"
@@ -53,11 +67,19 @@ source ~/.zshrc
 
 If you use bash, replace `~/.zshrc` with `~/.bashrc`.
 
-## Usage
-Basic run:
+## Quick Start
+Basic arXiv run:
 ```bash
 paper2ppt \
   --arxiv "https://arxiv.org/abs/2602.05883" \
+  --slides 10 \
+  --bullets 4
+```
+
+Local PDF run:
+```bash
+paper2ppt \
+  --pdf "/path/to/paper.pdf" \
   --slides 10 \
   --bullets 4
 ```
@@ -71,40 +93,70 @@ paper2ppt \
   --bullets 4
 ```
 
-Note: Web search uses DuckDuckGo HTML results and injects top sources into the LLM context.
-Note: Paper2ppt will auto-install updated dependencies if `requirements.txt` changes.
-
-Local PDF run:
+Multiple arXiv IDs:
 ```bash
 paper2ppt \
-  --pdf "/path/to/paper.pdf" \
-  --slides 10 \
+  --arxiv "1811.12432,1707.06347" \
+  --query "Compare key frame detection approaches" \
+  --slides 12 \
   --bullets 4
 ```
 
-Note: Local PDF parsing uses text extraction (no OCR). Scanned PDFs with no embedded text will need OCR first.
+Multiple PDFs from a directory:
+```bash
+paper2ppt \
+  --pdf-dir "/path/to/pdfs" \
+  --query "Compare methods across papers" \
+  --slides 12 \
+  --bullets 4
+```
+
+Mixed sources (arXiv + PDFs):
+```bash
+paper2ppt \
+  --arxiv 1811.12432 \
+  --pdf "/path/to/paper.pdf" \
+  --query "Compare approaches" \
+  --slides 12 \
+  --bullets 4
+```
+
+## Multi-PDF and Multi-Source Workflow
+When you provide multiple arXiv IDs and/or multiple PDFs, Paper2ppt:
+- Parses each source separately
+- Prints a source list with titles and paths/IDs
+- Merges all extracted content into a single summarization pipeline
+- Generates a unified deck that answers the user query across sources
+
+Source input options:
+- Repeatable args: `--pdf file1.pdf --pdf file2.pdf`
+- Comma-separated lists: `--arxiv "1811.12432,1707.06347"`
+- Directory scanning: `--pdf-dir "/path/to/pdfs"`
+- Mixed inputs: any combination of `--arxiv`, `--pdf`, and `--pdf-dir`
+
+Notes:
+- Local PDF parsing uses text extraction (no OCR). Scanned PDFs with no embedded text require OCR.
+- Figure insertion is only supported for a single arXiv source.
 
 ## Default Directories
 By default, Paper2ppt stores all runs under:
 `~/paper2ppt_runs/<paper_title_slug>/`
 
-You can change the root run location from anywhere:
-- `--root-dir "/path/to/runs"` for a one-off override
-- `PAPER2PPT_ROOT_DIR="/path/to/runs"` to set a default for all runs
-
 Inside that folder it creates:
-- `work/` for intermediate files (downloaded arXiv source, flattened TeX, etc.)
+- `work/` for intermediate files (downloaded arXiv source, flattened TeX, extracted PDF images)
 - `outputs/` for final artifacts
 
 Example output structure:
 ```text
 ~/paper2ppt_runs/Adaptive_Frame_Interpolation_for_Fast_Video_Processing/
   work/
-    arxiv_source/...
+    arxiv_1811.12432/...
+    pdf_<name>/pdf_images/...
   outputs/
     Adaptive_Frame_Interpolation_for_Fast_Video_Processing.tex
     Adaptive_Frame_Interpolation_for_Fast_Video_Processing.pdf
     run.log
+    query.txt
     outline-1.json
     outline-2.json
 ```
@@ -124,24 +176,12 @@ Override work/output directories directly:
 paper2ppt --work-dir "/tmp/p2p_work" --out-dir "/tmp/p2p_outputs" --arxiv 1811.12432 --slides 10 --bullets 4
 ```
 
-Enable figures and skip the LLM sanity check:
-```bash
-paper2ppt \
-  --arxiv 1811.12432 \
-  --slides 10 \
-  --bullets 4 \
-  --use-figures \
-  --skip-llm-sanity
-```
-
-Enable speaker notes:
-```bash
-paper2ppt \
-  --arxiv 1811.12432 \
-  --slides 10 \
-  --bullets 4 \
-  --with-speaker-notes
-```
+Notes on structure:
+- If `--root-dir` or `PAPER2PPT_ROOT_DIR` is used, each run gets its own subfolder named after a slugified paper title.
+- If `--work-dir` or `--out-dir` is set, those paths are used directly and no run subfolder is created.
+- For local PDFs, extracted images are saved under `work/pdf_images/` and their paths are included in the LLM input.
+- For query-guided runs, the user query is saved to `outputs/query.txt` and web sources appear in the References slide.
+- For multi-source runs, all PDFs and arXiv titles are listed in the console output, and the deck title is generated from the user query plus source titles.
 
 ## Outputs
 - `work/` for intermediate files
@@ -151,16 +191,10 @@ paper2ppt \
   - `run.log` (full run log)
   - `outline-1.json`, `outline-2.json`, ... (all outline drafts)
 
-Notes on structure:
-- If `--root-dir` or `PAPER2PPT_ROOT_DIR` is used, each run gets its own subfolder named after a slugified paper title.
-- If `--work-dir` or `--out-dir` is set, those paths are used directly and no run subfolder is created.
-- Figure assets (when `--use-figures` is enabled) are copied into the `outputs/` directory alongside the generated `.tex` and `.pdf`.
-- For local PDFs, extracted images are saved under `work/pdf_images/` and their paths are included in the LLM input.
-- For query-guided runs, the user query is saved to `outputs/query.txt` and web sources appear in the References slide.
-
 ## CLI Options
-- `--arxiv` arXiv link or ID (required if `--pdf` is not provided)
-- `--pdf` path to a local PDF (required if `--arxiv` is not provided)
+- `--arxiv` arXiv link or ID (repeatable or comma-separated list)
+- `--pdf` path to a local PDF (repeatable or comma-separated list)
+- `--pdf-dir` directory containing PDFs (repeatable)
 - `--slides` number of slides (required)
 - `--bullets` bullets per slide (required)
 - `--query` user query to guide the presentation theme (enables web search by default)
@@ -173,10 +207,16 @@ Notes on structure:
 - `--no-approve` skip outline approval loop
 - `--skip-llm-sanity` skip LLM sanity check
 - `--model` NVIDIA NIM model name
-- `--use-figures` enable figure selection and insertion
+- `--use-figures` enable figure selection and insertion (single arXiv source only)
 - `--with-speaker-notes` generate speaker notes for each slide
 - `--verbose` verbose logs
 - `--version` show version and exit
+
+## Use Cases
+- Quick paper summary for a talk or class
+- Comparative literature review across multiple papers
+- Query-driven decks like "Compare methods" or "What are the tradeoffs?"
+- Generate speaker notes for rehearsals
 
 ## Workflow Diagram
 ```text
@@ -192,10 +232,10 @@ Initialize LLM
 Sanity checks
   |
   v
-Download arXiv source  ->  Find main TeX  ->  Flatten TeX
+Collect sources (arXiv/PDFs)
   |
   v
-Strip LaTeX -> Build paper text
+Extract + flatten text
   |
   v
 Chunk + summarize (LLM)
@@ -210,8 +250,7 @@ Generate slides (LLM)
 Optional approval loop (user feedback -> LLM updates)
   |
   v
-Optional figures:
-  Extract figures -> Plan figure placement (LLM) -> Copy figures
+Optional figures (single arXiv only)
   |
   v
 Render Beamer LaTeX
@@ -219,6 +258,31 @@ Render Beamer LaTeX
   v
 Compile PDF
 ```
+
+## Project Directory
+```text
+Paper2ppt/
+  arxiv_utils.py
+  llm.py
+  logging_utils.py
+  main.py
+  models.py
+  pdf_utils.py
+  pipeline.py
+  tex_utils.py
+  web_utils.py
+  requirements.txt
+  pyproject.toml
+  README.md
+  CHANGELOG.md
+```
+
+## Maintenance
+- After any version upgrade, run: `pip install -r requirements.txt` from the codebase directory.
+- Paper2ppt auto-installs dependencies when `requirements.txt` changes, but manual updates are safer for reproducibility.
+
+## Changelog
+See `CHANGELOG.md` for version history and changes.
 
 ## Install `pdflatex`
 

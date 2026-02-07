@@ -171,7 +171,7 @@ def beamer_from_outline(outline: DeckOutline) -> str:
 \\usepackage{{amsmath}}
 \\setbeamertemplate{{navigation symbols}}{{}}
 \\title{{{_esc(outline.deck_title)}}}
-\\subtitle{{arXiv: {_esc(outline.arxiv_id)}}}
+\\subtitle{{Sources: {_esc(outline.arxiv_id)}}}
 \\author{{Auto-generated}}
 \\date{{}}
 
@@ -182,7 +182,7 @@ def beamer_from_outline(outline: DeckOutline) -> str:
 {{\\LARGE \\textbf{{{_esc(outline.deck_title)}}}}}
 \\vspace{{0.6em}}
 
-{{\\normalsize arXiv: {_esc(outline.arxiv_id)}}}
+{{\\normalsize Sources: {_esc(outline.arxiv_id)}}}
 \\end{{frame}}
 
 {chr(10).join(slides_tex)}
@@ -260,7 +260,7 @@ def beamer_from_outline_with_figs(outline: DeckOutline, fig_plan: dict) -> str:
 \\usepackage{{amsmath}}
 \\setbeamertemplate{{navigation symbols}}{{}}
 \\title{{{_esc(outline.deck_title)}}}
-\\subtitle{{arXiv: {_esc(outline.arxiv_id)}}}
+\\subtitle{{Sources: {_esc(outline.arxiv_id)}}}
 \\author{{Auto-generated}}
 \\date{{}}
 
@@ -271,7 +271,7 @@ def beamer_from_outline_with_figs(outline: DeckOutline, fig_plan: dict) -> str:
 {{\\LARGE \\textbf{{{_esc(outline.deck_title)}}}}}
 \\vspace{{0.6em}}
 
-{{\\normalsize arXiv: {_esc(outline.arxiv_id)}}}
+{{\\normalsize Sources: {_esc(outline.arxiv_id)}}}
 \\end{{frame}}
 
 {chr(10).join(slides_tex)}

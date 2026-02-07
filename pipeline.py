@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import subprocess
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,8 +48,8 @@ TQDM_NCOLS = 100
 
 @dataclass
 class RunConfig:
-    arxiv_id: str
-    pdf_path: Optional[Path]
+    arxiv_ids: List[str]
+    pdf_paths: List[Path]
     work_dir: Path
     out_dir: Path
     slide_count: int
@@ -134,15 +135,17 @@ class OutlineBuilder:
         meta: dict,
         user_query: str = "",
         web_context: str = "",
+        sources_block: str = "",
     ) -> str:
         for size in [1500, 1200, 900, 700, 500, 350]:
             snippet = chunk[:size]
             query_block = f"\nUser query: {user_query}\n" if user_query else ""
             web_block = f"\nWeb sources:\n{web_context}\n" if web_context else ""
+            sources_block = f"\nSources:\n{sources_block}\n" if sources_block else ""
             prompt = f"""
 Paper title: {meta['title']}
 Abstract: {meta['abstract']}
-{query_block}{web_block}
+{query_block}{web_block}{sources_block}
 
 Summarize chunk {i}. Plain text ONLY.
 
@@ -167,11 +170,14 @@ Chunk:
         feedback: str = "",
         user_query: str = "",
         web_context: str = "",
+        sources_block: str = "",
+        source_label: str = "",
     ) -> dict:
         summary = re.sub(r"\s+", " ", merged_summary).strip()[:1200]
         feedback_block = f"\nUser feedback:\n{feedback}\n" if feedback.strip() else ""
         query_block = f"\nUser query:\n{user_query}\n" if user_query else ""
         web_block = f"\nWeb sources:\n{web_context}\n" if web_context else ""
+        sources_block = f"\nSources:\n{sources_block}\n" if sources_block else ""
 
         query_rule = (
             f"- The deck must answer the user query; do not just summarize the paper\n"
@@ -185,7 +191,7 @@ Return ONLY JSON.
 Schema:
 {{
   "deck_title": "string",
-  "arxiv_id": "{self.cfg.arxiv_id}",
+  "arxiv_id": "{source_label}",
   "slide_titles": ["string", "..."]  // exactly {self.cfg.slide_count}
 }}
 
@@ -193,12 +199,13 @@ Rules:
 - Exactly {self.cfg.slide_count} titles
 - Cover: motivation, problem, key idea, method, experiments, results, limitations, takeaways
 - No extra keys
+- Deck title must reflect the user query and the source titles when provided
 {query_rule}
 
 Title: {meta['title']}
 Abstract: {meta['abstract']}
 Summary: {summary}
-{query_block}{web_block}
+{query_block}{web_block}{sources_block}
 {feedback_block}
 """.strip()
 
@@ -223,11 +230,13 @@ Summary: {summary}
         include_speaker_notes: bool = True,
         user_query: str = "",
         web_context: str = "",
+        sources_block: str = "",
     ) -> dict:
         ctx = re.sub(r"\s+", " ", merged_summary).strip()[:1600]
         feedback_block = f"\nUser feedback:\n{feedback}\n" if feedback.strip() else ""
         query_block = f"\nUser query:\n{user_query}\n" if user_query else ""
         web_block = f"\nWeb sources:\n{web_context}\n" if web_context else ""
+        sources_block = f"\nSources:\n{sources_block}\n" if sources_block else ""
         source_rule = (
             "\n- If you use a web source, append '(source: URL)' to the bullet text\n"
             if web_context
@@ -265,7 +274,7 @@ Rules:
 Paper title: {meta['title']}
 Abstract: {meta['abstract']}
 Context: {ctx}
-{query_block}{web_block}
+{query_block}{web_block}{sources_block}
 {feedback_block}
 
 Generate slide #{idx}: {slide_title}
@@ -355,39 +364,116 @@ Generate slide #{idx}: {slide_title}
 
     def build_outline_once(
         self,
-    ) -> Tuple[DeckOutline, Dict[str, Any], str, Dict[str, Any], str, List[Dict[str, str]]]:
-        if self.cfg.pdf_path:
-            logger.info("Reading local PDF: %s", self.cfg.pdf_path)
-            pdf_data = extract_pdf_content(self.cfg.pdf_path, self.cfg.work_dir)
-            meta = {
-                "title": pdf_data["title"],
-                "abstract": "",
-                "url": str(self.cfg.pdf_path),
-            }
-            img_lines = []
-            for img in pdf_data["images"]:
-                img_lines.append(f"Image (page {img['page']}): {img['path']}")
-            images_block = "\n".join(img_lines)
-            paper_text = pdf_data["text"]
-            if images_block:
-                paper_text = f"{paper_text}\n\n[IMAGES]\n{images_block}".strip()
-            logger.info("PDF text chars: %s", len(paper_text))
-            if len(paper_text) <= 200 and not images_block:
-                raise RuntimeError("PDF text too small and no images found; scanned PDF may require OCR.")
-        else:
+    ) -> Tuple[
+        DeckOutline,
+        Dict[str, Any],
+        str,
+        Dict[str, Any],
+        str,
+        List[Dict[str, str]],
+        str,
+        str,
+        List[str],
+    ]:
+        sources: List[Dict[str, Any]] = []
+
+        if self.cfg.arxiv_ids:
             logger.info("Fetching arXiv metadata...")
-            meta = self.arxiv_client.get_metadata(self.cfg.arxiv_id)
+            for arxiv_id in self.cfg.arxiv_ids:
+                meta = self.arxiv_client.get_metadata(arxiv_id)
+                title = meta.get("title", arxiv_id)
+                abstract = meta.get("abstract", "")
+                url = meta.get("url", "")
 
-            logger.info("Downloading and extracting arXiv source...")
-            src_dir = self.arxiv_client.download_source(self.cfg.arxiv_id, self.cfg.work_dir)
-            main_tex = find_main_tex_file(src_dir)
-            flat = flatten_tex(main_tex, max_files=120)
-            paper_text = build_paper_text(flat, max_chars=None)
+                logger.info("Downloading and extracting arXiv source: %s", arxiv_id)
+                arxiv_work = self.cfg.work_dir / f"arxiv_{arxiv_id}"
+                src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
+                main_tex = find_main_tex_file(src_dir)
+                flat = flatten_tex(main_tex, max_files=120)
+                paper_text = build_paper_text(flat, max_chars=None)
 
-            logger.info("Main TeX file: %s", main_tex)
-            logger.info("paper_text chars: %s", len(paper_text))
-            if len(paper_text) <= 500:
-                raise RuntimeError("paper_text too small; main tex likely wrong.")
+                logger.info("Main TeX file: %s", main_tex)
+                logger.info("paper_text chars: %s", len(paper_text))
+                if len(paper_text) <= 500:
+                    raise RuntimeError("paper_text too small; main tex likely wrong.")
+
+                sources.append(
+                    {
+                        "type": "arxiv",
+                        "id": arxiv_id,
+                        "title": title,
+                        "abstract": abstract,
+                        "url": url,
+                        "text": paper_text,
+                        "images": [],
+                    }
+                )
+
+        if self.cfg.pdf_paths:
+            for pdf_path in self.cfg.pdf_paths:
+                logger.info("Reading local PDF: %s", pdf_path)
+                pdf_work = self.cfg.work_dir / f"pdf_{pdf_path.stem}"
+                pdf_data = extract_pdf_content(pdf_path, pdf_work)
+                img_lines = []
+                for img in pdf_data["images"]:
+                    img_lines.append(f"Image (page {img['page']}): {img['path']}")
+                images_block = "\n".join(img_lines)
+                paper_text = pdf_data["text"]
+                if images_block:
+                    paper_text = f"{paper_text}\n\n[IMAGES]\n{images_block}".strip()
+                logger.info("PDF text chars: %s", len(paper_text))
+                if len(paper_text) <= 200 and not images_block:
+                    raise RuntimeError("PDF text too small and no images found; scanned PDF may require OCR.")
+
+                sources.append(
+                    {
+                        "type": "pdf",
+                        "id": str(pdf_path),
+                        "title": pdf_data["title"],
+                        "abstract": "",
+                        "url": str(pdf_path),
+                        "text": paper_text,
+                        "images": pdf_data["images"],
+                    }
+                )
+
+        if self.cfg.pdf_paths:
+            print("\nPDF sources:")
+            for s in sources:
+                if s["type"] == "pdf":
+                    print(f"- {s['title']} ({s['id']})")
+            print("")
+        if self.cfg.arxiv_ids:
+            print("arXiv sources:")
+            for s in sources:
+                if s["type"] == "arxiv":
+                    print(f"- {s['title']} ({s['id']})")
+            print("")
+
+        if len(sources) == 1:
+            meta = {"title": sources[0]["title"], "abstract": sources[0].get("abstract", "")}
+        else:
+            meta = {"title": "Multiple Sources", "abstract": "Multiple documents provided."}
+
+        if self.cfg.arxiv_ids and not self.cfg.pdf_paths and len(self.cfg.arxiv_ids) == 1:
+            source_label = f"arXiv:{self.cfg.arxiv_ids[0]}"
+        elif self.cfg.arxiv_ids and not self.cfg.pdf_paths:
+            source_label = f"arXiv ({len(self.cfg.arxiv_ids)})"
+        elif self.cfg.pdf_paths and not self.cfg.arxiv_ids:
+            source_label = f"Local PDFs ({len(self.cfg.pdf_paths)})"
+        else:
+            source_label = f"Mixed sources ({len(sources)})"
+
+        sources_block_lines = []
+        for i, s in enumerate(sources, 1):
+            src_tag = "arXiv" if s["type"] == "arxiv" else "PDF"
+            sources_block_lines.append(f"{i}. [{src_tag}] {s['title']} ({s['id']})")
+        sources_block = "\n".join(sources_block_lines)
+
+        blocks = []
+        for s in sources:
+            blocks.append(f"[SOURCE: {s['title']}]\n{s['text']}")
+        paper_text = "\n\n".join(blocks)
 
         web_sources = []
         web_context = ""
@@ -420,14 +506,28 @@ Generate slide #{idx}: {slide_title}
             for i in bar:
                 chunk_preview = self._preview_text(chunks[i - 1], max_len=50)
                 bar.set_postfix_str(f"chunk: {chunk_preview} | prev: {prev_summary_preview}")
-                s = self.summarize_chunk(i, chunks[i - 1], meta, self.cfg.user_query, web_context)
+                s = self.summarize_chunk(
+                    i,
+                    chunks[i - 1],
+                    meta,
+                    self.cfg.user_query,
+                    web_context,
+                    sources_block,
+                )
                 sums.append(s)
                 prev_summary_preview = self._preview_text(s, max_len=50)
 
         merged_summary = "\n\n".join(sums)
 
         logger.info("Generating slide titles (%s)...", self.cfg.slide_count)
-        titles_obj = self.get_slide_titles(meta, merged_summary, user_query=self.cfg.user_query, web_context=web_context)
+        titles_obj = self.get_slide_titles(
+            meta,
+            merged_summary,
+            user_query=self.cfg.user_query,
+            web_context=web_context,
+            sources_block=sources_block,
+            source_label=source_label,
+        )
 
         logger.info("Generating slides (%s)...", self.cfg.slide_count)
         slides = []
@@ -447,24 +547,40 @@ Generate slide #{idx}: {slide_title}
                     include_speaker_notes=self.cfg.include_speaker_notes,
                     user_query=self.cfg.user_query,
                     web_context=web_context,
+                    sources_block=sources_block,
                 )
             )
 
-        if self.cfg.pdf_path:
-            citations = [f"Local PDF: {self.cfg.pdf_path}"]
-        else:
-            citations = [f"arXiv:{self.cfg.arxiv_id}", meta.get("url", "")]
+        citations = []
+        for s in sources:
+            if s["type"] == "arxiv":
+                if s.get("url"):
+                    citations.append(f"{s['title']} - {s['url']}")
+                else:
+                    citations.append(f"arXiv:{s['id']}")
+            else:
+                citations.append(f"{s['title']} - {s['id']}")
         if web_sources:
             citations.extend([f"{s['title']} - {s['url']}" for s in web_sources])
 
         outline_dict = {
             "deck_title": titles_obj["deck_title"],
-            "arxiv_id": self.cfg.arxiv_id,
+            "arxiv_id": source_label,
             "slides": slides,
             "citations": citations,
         }
         outline = DeckOutline.model_validate(outline_dict)
-        return outline, meta, merged_summary, titles_obj, web_context, web_sources
+        return (
+            outline,
+            meta,
+            merged_summary,
+            titles_obj,
+            web_context,
+            web_sources,
+            sources_block,
+            source_label,
+            citations,
+        )
 
     def regenerate_titles_with_feedback(
         self,
@@ -474,11 +590,14 @@ Generate slide #{idx}: {slide_title}
         feedback: str,
         user_query: str = "",
         web_context: str = "",
+        sources_block: str = "",
+        source_label: str = "",
     ) -> dict:
         summary = re.sub(r"\s+", " ", merged_summary).strip()[:1200]
         prev = "\n".join([f"{i+1}. {t}" for i, t in enumerate(prev_titles)])
         query_block = f"\nUser query:\n{user_query}\n" if user_query else ""
         web_block = f"\nWeb sources:\n{web_context}\n" if web_context else ""
+        sources_block = f"\nSources:\n{sources_block}\n" if sources_block else ""
 
         prompt = f"""
 Return ONLY JSON.
@@ -486,7 +605,7 @@ Return ONLY JSON.
 Schema:
 {{
   "deck_title": "string",
-  "arxiv_id": "{self.cfg.arxiv_id}",
+  "arxiv_id": "{source_label}",
   "slide_titles": ["string", "..."]  // exactly {self.cfg.slide_count}
 }}
 
@@ -501,7 +620,7 @@ Revise the slide titles accordingly while keeping exactly {self.cfg.slide_count}
 Title: {meta['title']}
 Abstract: {meta['abstract']}
 Summary: {summary}
-{query_block}{web_block}
+{query_block}{web_block}{sources_block}
 """.strip()
 
         raw = safe_invoke(logger, self.llm, prompt, retries=6)
@@ -765,10 +884,11 @@ class Pipeline:
             raise ValueError("slide_count must be >= 2")
         if self.cfg.bullets_per_slide < 1:
             raise ValueError("bullets_per_slide must be >= 1")
-        if not self.cfg.arxiv_id and not self.cfg.pdf_path:
-            raise ValueError("arxiv_id or pdf_path must be provided")
-        if self.cfg.pdf_path and not self.cfg.pdf_path.exists():
-            raise FileNotFoundError(f"PDF not found: {self.cfg.pdf_path}")
+        if not self.cfg.arxiv_ids and not self.cfg.pdf_paths:
+            raise ValueError("At least one arXiv ID or PDF path must be provided")
+        for p in self.cfg.pdf_paths:
+            if not p.exists():
+                raise FileNotFoundError(f"PDF not found: {p}")
 
         self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -781,21 +901,41 @@ class Pipeline:
 
     @staticmethod
     def print_outline(outline: DeckOutline) -> None:
-        print("\n" + "=" * 90)
-        print("DECK:", outline.deck_title)
-        print("arXiv:", outline.arxiv_id)
-        print("=" * 90)
+        width = 96
+        print("\n" + "=" * width)
+        print(f"DECK: {outline.deck_title}")
+        print(f"SOURCES: {outline.arxiv_id}")
+        print("=" * width)
         for i, sl in enumerate(outline.slides, 1):
             print(f"\n{i:02d}. {sl.title}")
             for b in sl.bullets:
-                print("   -", b)
+                wrapped = textwrap.fill(
+                    b,
+                    width=width - 6,
+                    initial_indent="   - ",
+                    subsequent_indent="     ",
+                )
+                print(wrapped)
             if sl.figure_suggestions:
-                print("   [figs]", "; ".join(sl.figure_suggestions))
-            print("   [notes]", (sl.speaker_notes[:140] + ("..." if len(sl.speaker_notes) > 140 else "")))
-        print("\n" + "=" * 90)
+                figs = "; ".join(sl.figure_suggestions)
+                print(textwrap.fill(f"[figs] {figs}", width=width, initial_indent="   ", subsequent_indent="   "))
+            if sl.speaker_notes.strip():
+                note = sl.speaker_notes[:220] + ("..." if len(sl.speaker_notes) > 220 else "")
+                print(textwrap.fill(f"[notes] {note}", width=width, initial_indent="   ", subsequent_indent="   "))
+        print("\n" + "=" * width)
 
     def build_outline_with_approval(self, max_rounds: int = 3) -> Tuple[DeckOutline, Dict[str, Any]]:
-        outline, meta, merged_summary, titles_obj, web_context, web_sources = self.outline_builder.build_outline_once()
+        (
+            outline,
+            meta,
+            merged_summary,
+            titles_obj,
+            web_context,
+            web_sources,
+            sources_block,
+            source_label,
+            citations_base,
+        ) = self.outline_builder.build_outline_once()
         saved_path = self.outline_store.save(outline)
         logger.info("Saved outline draft: %s", saved_path)
 
@@ -819,6 +959,8 @@ class Pipeline:
                 feedback=feedback,
                 user_query=self.cfg.user_query,
                 web_context=web_context,
+                sources_block=sources_block,
+                source_label=source_label,
             )
             titles_obj = revised
 
@@ -840,19 +982,15 @@ class Pipeline:
                         include_speaker_notes=self.cfg.include_speaker_notes,
                         user_query=self.cfg.user_query,
                         web_context=web_context,
+                        sources_block=sources_block,
                     )
                 )
 
-            if self.cfg.pdf_path:
-                citations = [f"Local PDF: {self.cfg.pdf_path}"]
-            else:
-                citations = [f"arXiv:{self.cfg.arxiv_id}", meta.get("url", "")]
-            if web_sources:
-                citations.extend([f"{s['title']} - {s['url']}" for s in web_sources])
+            citations = list(citations_base)
 
             outline_dict = {
                 "deck_title": titles_obj["deck_title"],
-                "arxiv_id": self.cfg.arxiv_id,
+                "arxiv_id": source_label,
                 "slides": slides,
                 "citations": citations,
             }
@@ -867,14 +1005,14 @@ class Pipeline:
         self.sanity_checks()
         outline, _meta = self.build_outline_with_approval(max_rounds=3)
 
-        if self.cfg.use_figures and self.cfg.pdf_path:
-            logger.warning("Figure insertion is not supported for local PDFs; continuing without figures.")
+        if self.cfg.use_figures and (self.cfg.pdf_paths or len(self.cfg.arxiv_ids) != 1):
+            logger.warning("Figure insertion requires exactly one arXiv source; continuing without figures.")
             tex_path, pdf_path = self.renderer.render(outline, self.cfg.out_dir)
         elif self.cfg.use_figures:
             tex_path, pdf_path = self.renderer.render_with_figs(
                 self.llm,
                 outline,
-                self.cfg.arxiv_id,
+                self.cfg.arxiv_ids[0],
                 self.cfg.work_dir,
                 self.cfg.out_dir,
                 self.figure_planner,

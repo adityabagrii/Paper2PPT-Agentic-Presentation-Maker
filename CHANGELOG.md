@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0 - 2026-02-07
+- Added multi-source support: multiple arXiv IDs, multiple PDFs, and PDF directories.
+- Pretty-printed outline display for approval.
+- Deck title is generated from the user query and source titles.
+
 ## 0.4.5 - 2026-02-07
 - Added `--retry-slides` to control slide generation retries.
 
