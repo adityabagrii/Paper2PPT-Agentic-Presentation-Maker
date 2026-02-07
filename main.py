@@ -1,4 +1,4 @@
-"""CLI entrypoint for running the Paper2ppt pipeline from the terminal."""
+"""CLI entrypoint for running the Paper2ppt pipeline from the terminal ."""
 from __future__ import annotations
 
 import argparse
@@ -25,7 +25,7 @@ except Exception:
     from pipeline import Pipeline, RunConfig
 
 logger = logging.getLogger("paper2ppt")
-VERSION = "0.6.3"
+VERSION = "0.6.5"
 
 
 def _requirements_path() -> Path | None:
@@ -91,6 +91,7 @@ def print_helper() -> None:
     print("  --skip-llm-sanity      Skip LLM sanity check")
     print("  --no-approve           Skip outline approval loop")
     print("  --interactive          Prompt at checkpoints to allow aborting")
+    print("  --generate-images      Generate diagrams/images from figure ideas")
     print("")
     print("Full options:")
     print("  paper2ppt --help")
@@ -138,6 +139,16 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="How often (in steps) to prompt during interactive runs",
     )
+    p.add_argument("--generate-images", "-gi", action="store_true", help="Generate diagrams/images from figure ideas")
+    p.add_argument("--image-provider", default="nvidia", help="Image generation provider (default: nvidia)")
+    p.add_argument(
+        "--image-model",
+        default="black-forest-labs/flux.1-kontext-dev",
+        help="Image generation model name",
+    )
+    p.add_argument("--max-generated-images", type=int, default=6, help="Max generated images per run")
+    p.add_argument("--image-size", default="1:1", help="Image size or aspect ratio (e.g., 1:1 or 1024x1024)")
+    p.add_argument("--image-quality", default="medium", help="Image quality: low, medium, high")
     p.add_argument("--resume", "-r", default="", help="Resume from a previous run directory or outputs directory")
     p.add_argument(
         "--root-dir",
@@ -301,6 +312,17 @@ def main() -> int:
         interactive=args.interactive,
         check_interval=max(1, args.check_interval),
         resume_path=Path(args.resume).expanduser().resolve() if args.resume else None,
+        generate_images=args.generate_images,
+        image_provider=args.image_provider,
+        image_model=args.image_model,
+        max_generated_images=max(0, args.max_generated_images),
+        image_size=args.image_size,
+        image_quality=args.image_quality,
+        image_api_key=(
+            os.environ.get("NVIDIA_API_KEY", "")
+            if args.image_provider.lower() in {"nvidia", "nim"}
+            else os.environ.get("OPENAI_API_KEY", "")
+        ),
     )
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)

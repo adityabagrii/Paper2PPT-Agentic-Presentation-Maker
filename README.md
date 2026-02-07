@@ -20,6 +20,7 @@ Agentic CLI that turns arXiv papers and/or local PDFs into Beamer slide decks us
 - NVIDIA NIM API key
 - `pymupdf` for local PDF parsing
 - `pdflatex` for PDF output (optional but recommended)
+- Optional: `NVIDIA_API_KEY` for diagram/image generation (default)
 
 ## Installation
 From the repository root:
@@ -138,6 +139,20 @@ streamlit run gui_streamlit.py
 ```
 The GUI supports arXiv IDs, local PDFs, PDF directories, PDF URLs, and file uploads.
 You can save a default root directory from the sidebar for future runs.
+For image generation, set `NVIDIA_API_KEY` in your environment (default provider).
+
+## Diagram/Image Generation
+Paper2ppt can generate diagrams or illustrative images from the slide outline's figure ideas.
+Default provider uses NVIDIA's `black-forest-labs/flux.1-kontext-dev`.
+To enable:
+```bash
+paper2ppt -a 1811.12432 --slides 10 --bullets 4 --generate-images --max-generated-images 6
+```
+Images are saved to `outputs/generated_images/` and included in slides automatically.
+Set your NVIDIA key:
+```bash
+export NVIDIA_API_KEY="YOUR_KEY_HERE"
+```
 
 ## Multi-PDF and Multi-Source Workflow
 When you provide multiple arXiv IDs and/or multiple PDFs, Paper2ppt:
@@ -225,6 +240,12 @@ Notes on structure:
 - `--interactive` enable interactive checkpoints to allow aborting
 - `--check-interval` how often to prompt during interactive runs (default `5`)
 - `--resume` resume from a previous run directory or outputs directory
+- `--generate-images` generate diagrams/images from figure ideas
+- `--image-provider` image generation provider (default `nvidia`)
+- `--image-model` image generation model name (default `black-forest-labs/flux.1-kontext-dev`)
+- `--max-generated-images` max generated images per run (default `6`)
+- `--image-size` image size (default `1024x1024`)
+- `--image-quality` image quality (low/medium/high)
 - `--root-dir` root directory for all runs (default `$PAPER2PPT_ROOT_DIR` or `~/paper2ppt_runs`)
 - `--work-dir` working directory (overrides `--root-dir`)
 - `--out-dir` output directory (overrides `--root-dir`)

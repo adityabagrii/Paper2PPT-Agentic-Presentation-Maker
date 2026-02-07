@@ -20,6 +20,7 @@ try:
     from .models import DeckOutline
     from .pdf_utils import extract_pdf_content
     from .web_utils import search_web
+    from .image_gen_utils import build_prompts_from_slides, generate_images_openai, generate_images_nvidia
     from .tex_utils import (
         beamer_from_outline,
         beamer_from_outline_with_figs,
@@ -34,6 +35,7 @@ except Exception:
     from models import DeckOutline
     from pdf_utils import extract_pdf_content
     from web_utils import search_web
+    from image_gen_utils import build_prompts_from_slides, generate_images_openai, generate_images_nvidia
     from tex_utils import (
         beamer_from_outline,
         beamer_from_outline_with_figs,
@@ -70,6 +72,13 @@ class RunConfig:
     interactive: bool
     check_interval: int
     resume_path: Optional[Path]
+    generate_images: bool
+    image_provider: str
+    image_model: str
+    max_generated_images: int
+    image_size: str
+    image_quality: str
+    image_api_key: str
 
 
 class OutlineJSONStore:
@@ -222,7 +231,7 @@ Chunk:
                     self.cfg.retry_empty,
                 )
 
-            print(f\"\\nLLM returned empty output for this chunk after {self.cfg.retry_empty} attempts.\")
+            print(f"\nLLM returned empty output for this chunk after {self.cfg.retry_empty} attempts.")
             print("Prompt used:\n" + prompt[:1500] + ("\n... [truncated]" if len(prompt) > 1500 else ""))
             ans = input("Type 's' to skip this chunk, or 'q' to quit: ").strip().lower()
             if ans in {"s", "skip"}:
@@ -1279,6 +1288,41 @@ class Pipeline:
             ans = input("[Render] Press Enter to render outputs or type 'q' to quit: ").strip().lower()
             if ans in {"q", "quit", "exit"}:
                 raise RuntimeError("Aborted by user.")
+
+        if self.cfg.generate_images:
+            try:
+                prompts = build_prompts_from_slides(outline.slides)
+                max_images = self.cfg.max_generated_images
+                if prompts and max_images > 0:
+                    img_dir = self.cfg.out_dir / "generated_images"
+                    provider = self.cfg.image_provider.lower()
+                    if provider == "openai":
+                        created = generate_images_openai(
+                            [p for _, p in prompts],
+                            img_dir,
+                            api_key=self.cfg.image_api_key,
+                            model=self.cfg.image_model,
+                            size=self.cfg.image_size,
+                            quality=self.cfg.image_quality,
+                            max_images=max_images,
+                        )
+                    elif provider in {"nvidia", "nim"}:
+                        created = generate_images_nvidia(
+                            [p for _, p in prompts],
+                            img_dir,
+                            api_key=self.cfg.image_api_key,
+                            model=self.cfg.image_model,
+                            aspect_ratio=self.cfg.image_size,
+                            max_images=max_images,
+                        )
+                    else:
+                        raise RuntimeError(f"Unknown image provider: {self.cfg.image_provider}")
+
+                    # Attach generated images to slides in order of prompts
+                    for (slide_idx, _prompt), path in zip(prompts, created):
+                        outline.slides[slide_idx - 1].generated_images.append(str(path))
+            except Exception:
+                logger.exception("Image generation failed; continuing without images.")
 
         if self.cfg.use_figures and (self.cfg.pdf_paths or len(self.cfg.arxiv_ids) != 1):
             logger.warning("Figure insertion requires exactly one arXiv source; continuing without figures.")

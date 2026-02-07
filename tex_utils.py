@@ -122,6 +122,13 @@ def beamer_from_outline(outline: DeckOutline) -> str:
         if sl.figure_suggestions:
             figs = "\\vspace{0.4em}\n{\\footnotesize\\textit{Figure ideas:} " + _esc("; ".join(sl.figure_suggestions)) + "}"
 
+        gen_imgs = ""
+        if getattr(sl, "generated_images", None):
+            img_lines = []
+            for p in sl.generated_images:
+                img_lines.append(f"\\includegraphics[width=0.9\\linewidth]{{{_esc(p)}}}")
+            gen_imgs = "\\vspace{0.6em}\n" + "\\\\\n".join(img_lines)
+
         notes = ""
         if sl.speaker_notes.strip():
             notes = f"\\vspace{{0.4em}}\\n\\\\footnotesize\\\\textit{{Notes:}} {_esc(sl.speaker_notes)}"
@@ -133,6 +140,7 @@ def beamer_from_outline(outline: DeckOutline) -> str:
 {bullets}
 \\end{{itemize}}
 {figs}
+{gen_imgs}
 {notes}
 \\end{{frame}}
 """.strip()
@@ -212,6 +220,12 @@ def beamer_from_outline_with_figs(outline: DeckOutline, fig_plan: dict) -> str:
     slides_tex = []
     for idx, sl in enumerate(outline.slides, 1):
         bullets = "\n".join([f"\\item {_esc(b)}" for b in sl.bullets])
+        gen_imgs = ""
+        if getattr(sl, "generated_images", None):
+            img_lines = []
+            for p in sl.generated_images:
+                img_lines.append(f"\\includegraphics[width=0.9\\linewidth]{{{_esc(p)}}}")
+            gen_imgs = "\\vspace{0.6em}\n" + "\\\\\n".join(img_lines)
 
         slides_tex.append(
             f"""
@@ -219,6 +233,7 @@ def beamer_from_outline_with_figs(outline: DeckOutline, fig_plan: dict) -> str:
 \\begin{{itemize}}
 {bullets}
 \\end{{itemize}}
+{gen_imgs}
 {("\\vspace{0.3em}\\n\\\\footnotesize\\\\textit{Notes:} " + _esc(sl.speaker_notes)) if sl.speaker_notes.strip() else ""}
 \\end{{frame}}
 """.strip()

@@ -11,6 +11,7 @@ class SlideSpec(BaseModel):
     bullets: List[str] = Field(default_factory=list)
     speaker_notes: str = ""
     figure_suggestions: List[str] = Field(default_factory=list)
+    generated_images: List[str] = Field(default_factory=list)
 
 
 class DeckOutline(BaseModel):

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.5 - 2026-02-07
+- Added NVIDIA Flux (black-forest-labs/flux.1-kontext-dev) image generation provider and set as default.
+
+## 0.6.4 - 2026-02-07
+- Added diagram/image generation from slide figure ideas with optional OpenAI provider.
+
 ## 0.6.3 - 2026-02-07
 - Print chunk summary previews and slide titles for better terminal visibility.
 

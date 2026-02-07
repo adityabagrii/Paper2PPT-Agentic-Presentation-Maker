@@ -208,6 +208,15 @@ def main() -> None:
         bullets = st.number_input("Bullets per slide", min_value=1, max_value=10, value=4, step=1)
         query = st.text_input("User query")
         use_figures = st.checkbox("Use figures (single arXiv only)")
+        generate_images = st.checkbox("Generate diagrams/images")
+        image_provider = st.selectbox("Image provider", options=["nvidia", "openai"], index=0)
+        image_model = st.text_input(
+            "Image model",
+            value="black-forest-labs/flux.1-kontext-dev" if image_provider == "nvidia" else "gpt-image-1.5",
+        )
+        max_images = st.number_input("Max generated images", min_value=0, max_value=20, value=6, step=1)
+        image_size = st.text_input("Image size/aspect", value="1:1")
+        image_quality = st.selectbox("Image quality", options=["low", "medium", "high"], index=1)
         with_notes = st.checkbox("Include speaker notes")
         skip_sanity = st.checkbox("Skip LLM sanity check")
         approve = st.checkbox("Require outline approval", value=True)
@@ -273,6 +282,17 @@ def main() -> None:
             interactive=False,
             check_interval=5,
             resume_path=None,
+            generate_images=generate_images,
+            image_provider=image_provider,
+            image_model=image_model,
+            max_generated_images=int(max_images),
+            image_size=image_size,
+            image_quality=image_quality,
+            image_api_key=(
+                os.environ.get("NVIDIA_API_KEY", "")
+                if image_provider == "nvidia"
+                else os.environ.get("OPENAI_API_KEY", "")
+            ),
         )
 
         cfg.out_dir.mkdir(parents=True, exist_ok=True)
