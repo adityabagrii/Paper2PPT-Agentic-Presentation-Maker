@@ -1,4 +1,4 @@
-# Paper2ppt - An Agentic Workflow for Presentation Generation
+# Paper2PPT - An Agentic Workflow for Presentation Generation
 
 # Author
 Aditya Bagri  
@@ -67,6 +67,30 @@ source ~/.zshrc
 ```
 
 If you use bash, replace `~/.zshrc` with `~/.bashrc`.
+
+## Install `pdflatex`
+
+### macOS
+Option 1 (Homebrew, minimal):
+```bash
+brew install --cask basictex
+```
+Then restart your terminal.
+
+Option 2 (full distribution):
+```bash
+brew install --cask mactex
+```
+
+### Windows
+Option 1 (recommended, MiKTeX):
+1. Download and install MiKTeX from the official site.
+2. Make sure the MiKTeX `bin` folder is on your PATH.
+3. Open a new terminal and run `pdflatex --version` to verify.
+
+Option 2 (full distribution, TeX Live):
+1. Install TeX Live.
+2. Add the TeX Live `bin` directory to PATH.
 
 ## Quick Start
 Basic arXiv run:
@@ -230,32 +254,32 @@ Notes on structure:
 - `-p`, `--pdf` path to a local PDF (repeatable or comma-separated list)
 - `-d`, `--pdf-dir` directory containing PDFs (repeatable)
 - `-u`, `--pdf-url` direct PDF URL (repeatable or comma-separated list)
-- `--slides` number of slides (required)
-- `--bullets` bullets per slide (required)
-- `--query` user query to guide the presentation theme (enables web search by default)
-- `--name` custom run name for the output directory
-- `--no-web-search` disable web search even if `--query` is provided
-- `--retry-slides` retry count for slide generation (default `3`)
-- `--retry-empty` retry count for empty LLM outputs (default `3`)
-- `--interactive` enable interactive checkpoints to allow aborting
-- `--check-interval` how often to prompt during interactive runs (default `5`)
-- `--resume` resume from a previous run directory or outputs directory
-- `--generate-images` generate diagrams/images from figure ideas
+- `-s`, `--slides` number of slides (required)
+- `-b`, `--bullets` bullets per slide (required)
+- `-q`, `--query` user query to guide the presentation theme (enables web search by default)
+- `-n`, `--name` custom run name for the output directory
+- `-ws`, `--no-web-search` disable web search even if `--query` is provided
+- `-rs`, `--retry-slides` retry count for slide generation (default `3`)
+- `-re`, `--retry-empty` retry count for empty LLM outputs (default `3`)
+- `-I`, `--interactive` enable interactive checkpoints to allow aborting
+- `-ci`, `--check-interval` how often to prompt during interactive runs (default `5`)
+- `-r`, `--resume` resume from a previous run directory or outputs directory
+- `-gi`, `--generate-images` generate diagrams/images from figure ideas
 - `--image-provider` image generation provider (default `nvidia`)
 - `--image-model` image generation model name (default `black-forest-labs/flux.1-kontext-dev`)
 - `--max-generated-images` max generated images per run (default `6`)
 - `--image-size` image size (default `1024x1024`)
 - `--image-quality` image quality (low/medium/high)
 - `--root-dir` root directory for all runs (default `$PAPER2PPT_ROOT_DIR` or `~/paper2ppt_runs`)
-- `--work-dir` working directory (overrides `--root-dir`)
-- `--out-dir` output directory (overrides `--root-dir`)
-- `--max-summary-chunks` cap for LLM summary chunks (default `30`)
-- `--no-approve` skip outline approval loop
-- `--skip-llm-sanity` skip LLM sanity check
-- `--model` NVIDIA NIM model name
-- `--use-figures` enable figure selection and insertion (single arXiv source only)
-- `--with-speaker-notes` generate speaker notes for each slide
-- `--verbose` verbose logs
+- `-wdir`, `--work-dir` working directory (overrides `--root-dir`)
+- `-odir`, `--out-dir` output directory (overrides `--root-dir`)
+- `-msc`, `--max-summary-chunks` cap for LLM summary chunks (default `30`)
+- `-na`, `--no-approve` skip outline approval loop
+- `-llms`, `--skip-llm-sanity` skip LLM sanity check
+- `-m`, `--model` NVIDIA NIM model name
+- `-uf`, `--use-figures` enable figure selection and insertion (single arXiv source only)
+- `-wsn`, `--with-speaker-notes` generate speaker notes for each slide
+- `-v`, `--verbose` verbose logs
 - `--version` show version and exit
 
 ## Use Cases
@@ -352,27 +376,3 @@ See `CHANGELOG.md` for version history and changes.
 - 0.5.4: Multi-source chunk summaries run in parallel for lower latency.
 - 0.4.4: Slide generation retries avoid hard failures when JSON is malformed.
 - 0.4.2: Logging falls back to temp/console on filesystem timeouts.
-
-## Install `pdflatex`
-
-### macOS
-Option 1 (Homebrew, minimal):
-```bash
-brew install --cask basictex
-```
-Then restart your terminal.
-
-Option 2 (full distribution):
-```bash
-brew install --cask mactex
-```
-
-### Windows
-Option 1 (recommended, MiKTeX):
-1. Download and install MiKTeX from the official site.
-2. Make sure the MiKTeX `bin` folder is on your PATH.
-3. Open a new terminal and run `pdflatex --version` to verify.
-
-Option 2 (full distribution, TeX Live):
-1. Install TeX Live.
-2. Add the TeX Live `bin` directory to PATH.

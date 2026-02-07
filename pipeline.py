@@ -649,6 +649,7 @@ Generate slide #{idx}: {slide_title}
                             sources_block,
                         )
                     ] = i
+                results: dict[int, str] = {}
                 with tqdm(
                     total=N,
                     desc="Summarize",
@@ -659,16 +660,14 @@ Generate slide #{idx}: {slide_title}
                     for fut in as_completed(futures):
                         i = futures[fut]
                         s = fut.result()
-                        sums.append(s)
+                        results[i] = s
                         prev_summary_preview = self._preview_text(s, max_len=50)
                         bar.set_postfix_str(f"chunk: {i}/{N} | prev: {prev_summary_preview}")
                         bar.update(1)
-                        snippet = " ".join(s.splitlines())[:260]
-                        if snippet:
-                            self._print_section(
-                                f"Chunk {i} summary (preview)",
-                                [snippet],
-                            )
+                        # Keep logs clean: omit per-chunk summary previews.
+                for i in range(1, N + 1):
+                    if i in results:
+                        sums.append(results[i])
         else:
             with tqdm(
                 range(1, N + 1),
@@ -691,22 +690,15 @@ Generate slide #{idx}: {slide_title}
                     )
                     sums.append(s)
                     prev_summary_preview = self._preview_text(s, max_len=50)
-                    snippet = " ".join(s.splitlines())[:260]
-                    if snippet:
-                        self._print_section(
-                            f"Chunk {i} summary (preview)",
-                            [snippet],
-                        )
+                    # Keep logs clean: omit per-chunk summary previews.
 
         merged_summary = "\n\n".join(sums)
 
         logger.info("Generating slide titles (%s)...", self.cfg.slide_count)
         self._checkpoint("Slide titles")
-        titles_feedback = self._prompt_feedback("Slide titles feedback")
         titles_obj = self.get_slide_titles(
             meta,
             merged_summary,
-            feedback=titles_feedback or "",
             user_query=(self.cfg.user_query + "\n" + global_feedback).strip(),
             web_context=web_context,
             sources_block=sources_block,
@@ -714,8 +706,25 @@ Generate slide #{idx}: {slide_title}
         )
         self._print_section(
             "Slide titles",
-            [f"{i+1}. {t}" for i, t in enumerate(titles_obj.get("slide_titles", []))],
+            [t for t in titles_obj.get("slide_titles", [])],
         )
+        titles_feedback = self._prompt_feedback("Slide titles feedback")
+        if titles_feedback:
+            revised = self.regenerate_titles_with_feedback(
+                meta,
+                merged_summary,
+                prev_titles=titles_obj.get("slide_titles", []),
+                feedback=titles_feedback,
+                user_query=(self.cfg.user_query + "\n" + global_feedback).strip(),
+                web_context=web_context,
+                sources_block=sources_block,
+                source_label=source_label,
+            )
+            titles_obj = revised
+            self._print_section(
+                "Revised slide titles",
+                [t for t in titles_obj.get("slide_titles", [])],
+            )
         self._save_progress(
             {
                 "stage": "titles",
