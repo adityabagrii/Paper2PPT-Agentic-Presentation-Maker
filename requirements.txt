@@ -1,0 +1,7 @@
+arxiv
+pymupdf
+requests
+pydantic>=2.0
+tqdm
+langchain-nvidia-ai-endpoints
+python-dotenv
