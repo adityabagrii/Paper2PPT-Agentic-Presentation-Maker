@@ -165,6 +165,7 @@ Notes on structure:
 - `--bullets` bullets per slide (required)
 - `--query` user query to guide the presentation theme (enables web search by default)
 - `--no-web-search` disable web search even if `--query` is provided
+- `--retry-slides` retry count for slide generation (default `3`)
 - `--root-dir` root directory for all runs (default `$PAPER2PPT_ROOT_DIR` or `~/paper2ppt_runs`)
 - `--work-dir` working directory (overrides `--root-dir`)
 - `--out-dir` output directory (overrides `--root-dir`)

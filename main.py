@@ -25,7 +25,7 @@ except Exception:
     from pipeline import Pipeline, RunConfig
 
 logger = logging.getLogger("paper2ppt")
-VERSION = "0.4.4"
+VERSION = "0.4.5"
 
 
 def _requirements_path() -> Path | None:
@@ -98,6 +98,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bullets", type=int, required=True, help="Number of bullets per slide")
     p.add_argument("--query", default="", help="User query to guide the presentation theme")
     p.add_argument("--no-web-search", action="store_true", help="Disable web search even if --query is provided")
+    p.add_argument("--retry-slides", type=int, default=3, help="Retry count for slide generation")
     p.add_argument(
         "--root-dir",
         default=None,
@@ -183,6 +184,7 @@ def main() -> int:
         include_speaker_notes=args.with_speaker_notes,
         user_query=(args.query or "").strip(),
         web_search=not args.no_web_search,
+        retry_slides=max(1, args.retry_slides),
     )
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)

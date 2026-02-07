@@ -63,6 +63,7 @@ class RunConfig:
     include_speaker_notes: bool
     user_query: str
     web_search: bool
+    retry_slides: int
 
 
 class OutlineJSONStore:
@@ -281,7 +282,7 @@ Generate slide #{idx}: {slide_title}
                 "figure_suggestions": [],
             }
 
-        for attempt in range(1, 4):
+        for attempt in range(1, self.cfg.retry_slides + 1):
             raw = safe_invoke(logger, self.llm, prompt, retries=6)
             js = self.try_extract_json(raw)
             if js is None:

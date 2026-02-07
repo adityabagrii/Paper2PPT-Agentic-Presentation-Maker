@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.4.5 - 2026-02-07
+- Added `--retry-slides` to control slide generation retries.
+
 ## 0.4.4 - 2026-02-07
 - Retry slide generation on malformed JSON and fall back instead of crashing.
 
