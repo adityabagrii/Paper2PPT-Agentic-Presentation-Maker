@@ -84,6 +84,14 @@ paper2ppt \
   --bullets 4
 ```
 
+PDF URL run:
+```bash
+paper2ppt \
+  -u "https://example.com/paper.pdf" \
+  --slides 10 \
+  --bullets 4
+```
+
 Query-guided run (web search enabled by default):
 ```bash
 paper2ppt \
@@ -132,7 +140,8 @@ Source input options:
 - Repeatable args: `-p file1.pdf -p file2.pdf`
 - Comma-separated lists: `-a "1811.12432,1707.06347"`
 - Directory scanning: `-d "/path/to/pdfs"`
-- Mixed inputs: any combination of `-a`, `-p`, and `-d`
+- Direct URLs: `-u "https://example.com/paper.pdf"`
+- Mixed inputs: any combination of `-a`, `-p`, `-d`, and `-u`
 
 Notes:
 - Local PDF parsing uses text extraction (no OCR). Scanned PDFs with no embedded text require OCR.
@@ -195,6 +204,7 @@ Notes on structure:
 - `-a`, `--arxiv` arXiv link or ID (repeatable or comma-separated list)
 - `-p`, `--pdf` path to a local PDF (repeatable or comma-separated list)
 - `-d`, `--pdf-dir` directory containing PDFs (repeatable)
+- `-u`, `--pdf-url` direct PDF URL (repeatable or comma-separated list)
 - `--slides` number of slides (required)
 - `--bullets` bullets per slide (required)
 - `--query` user query to guide the presentation theme (enables web search by default)

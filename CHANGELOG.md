@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.5.1 - 2026-02-07
+- Added `--pdf-url` for direct PDF links (repeatable or comma-separated).
+
 ## 0.5.0 - 2026-02-07
 - Added multi-source support: multiple arXiv IDs, multiple PDFs, and PDF directories.
 - Pretty-printed outline display for approval.

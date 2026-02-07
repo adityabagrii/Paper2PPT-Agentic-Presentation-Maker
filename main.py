@@ -25,7 +25,7 @@ except Exception:
     from pipeline import Pipeline, RunConfig
 
 logger = logging.getLogger("paper2ppt")
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 
 def _requirements_path() -> Path | None:
@@ -67,6 +67,7 @@ def print_helper() -> None:
     print("Quick start:")
     print('  paper2ppt --arxiv "https://arxiv.org/abs/2602.05883" --slides 10 --bullets 4')
     print('  paper2ppt --pdf "/path/to/paper.pdf" --slides 10 --bullets 4')
+    print('  paper2ppt --pdf-url "https://example.com/paper.pdf" --slides 10 --bullets 4')
     print('  paper2ppt --arxiv 1811.12432 --query "Compare this to prior work" --slides 10 --bullets 4')
     print('  paper2ppt --arxiv "1811.12432,1707.06347" --slides 10 --bullets 4')
     print('  paper2ppt --pdf-dir "/path/to/pdfs" --query "Compare methods" --slides 10 --bullets 4')
@@ -79,6 +80,7 @@ def print_helper() -> None:
     print("  -a, --arxiv LIST       One or more arXiv IDs/URLs")
     print("  -p, --pdf LIST         One or more local PDF paths")
     print("  -d, --pdf-dir PATH     Directory of PDFs")
+    print("  -u, --pdf-url LIST     One or more direct PDF URLs")
     print("  --root-dir PATH        Override root runs directory")
     print("  --work-dir PATH        Override working directory")
     print("  --out-dir PATH         Override output directory")
@@ -113,6 +115,12 @@ def parse_args() -> argparse.Namespace:
         "--pdf-dir",
         action="append",
         help="Directory containing PDFs (repeatable)",
+    )
+    p.add_argument(
+        "-u",
+        "--pdf-url",
+        action="append",
+        help="Direct PDF URL (repeatable or comma-separated list)",
     )
     p.add_argument("--slides", "-s", type=int, required=True, help="Number of slides to generate")
     p.add_argument("--bullets", "-b", type=int, required=True, help="Number of bullets per slide")
@@ -174,6 +182,33 @@ def _collect_pdfs(paths: list[str], dirs: list[str]) -> list[Path]:
     return pdfs
 
 
+def _download_pdfs(urls: list[str], out_dir: Path) -> list[Path]:
+    import requests
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    downloaded: list[Path] = []
+    for u in _split_list_args(urls):
+        try:
+            name = Path(u.split("?")[0]).name or "paper.pdf"
+            if not name.lower().endswith(".pdf"):
+                name = name + ".pdf"
+            target = out_dir / name
+            r = requests.get(u, stream=True, timeout=30)
+            r.raise_for_status()
+            with target.open("wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 256):
+                    if chunk:
+                        f.write(chunk)
+            downloaded.append(target)
+        except Exception as exc:
+            print(f"\nFailed to download PDF URL: {u}\nReason: {exc}")
+            ans = input("Type 's' to skip this PDF, or 'q' to quit: ").strip().lower()
+            if ans in {"q", "quit", "exit"}:
+                raise SystemExit(2)
+            logger.warning("Skipping PDF URL after failure: %s", u)
+    return downloaded
+
+
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "help":
         print_helper()
@@ -187,8 +222,9 @@ def main() -> int:
 
     arxiv_inputs = _split_list_args(args.arxiv or [])
     pdf_paths = _collect_pdfs(args.pdf or [], args.pdf_dir or [])
-    if not arxiv_inputs and not pdf_paths:
-        logger.error("Provide at least one source via --arxiv, --pdf, or --pdf-dir.")
+    pdf_urls = _split_list_args(args.pdf_url or [])
+    if not arxiv_inputs and not pdf_paths and not pdf_urls:
+        logger.error("Provide at least one source via --arxiv, --pdf, --pdf-dir, or --pdf-url.")
         return 2
 
     arxiv_ids: list[str] = []
@@ -208,6 +244,8 @@ def main() -> int:
             paper_title = arxiv_ids[0]
     elif pdf_paths:
         paper_title = pdf_paths[0].stem
+    elif pdf_urls:
+        paper_title = Path(pdf_urls[0].split("?")[0]).stem or "paper"
 
     root_dir = args.root_dir or os.environ.get("PAPER2PPT_ROOT_DIR", "~/paper2ppt_runs")
     run_root = Path(root_dir).expanduser().resolve()
@@ -221,6 +259,9 @@ def main() -> int:
 
     work_dir = Path(args.work_dir).expanduser().resolve() if args.work_dir else (run_dir / "work")
     out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else (run_dir / "outputs")
+    if pdf_urls:
+        downloaded = _download_pdfs(pdf_urls, work_dir / "downloads")
+        pdf_paths.extend(downloaded)
 
     cfg = RunConfig(
         arxiv_ids=arxiv_ids,
