@@ -71,7 +71,7 @@ If you use bash, replace `~/.zshrc` with `~/.bashrc`.
 Basic arXiv run:
 ```bash
 paper2ppt \
-  --arxiv "https://arxiv.org/abs/2602.05883" \
+  -a "https://arxiv.org/abs/2602.05883" \
   --slides 10 \
   --bullets 4
 ```
@@ -79,7 +79,7 @@ paper2ppt \
 Local PDF run:
 ```bash
 paper2ppt \
-  --pdf "/path/to/paper.pdf" \
+  -p "/path/to/paper.pdf" \
   --slides 10 \
   --bullets 4
 ```
@@ -87,7 +87,7 @@ paper2ppt \
 Query-guided run (web search enabled by default):
 ```bash
 paper2ppt \
-  --arxiv 1811.12432 \
+  -a 1811.12432 \
   --query "Compare this approach to prior work" \
   --slides 10 \
   --bullets 4
@@ -96,7 +96,7 @@ paper2ppt \
 Multiple arXiv IDs:
 ```bash
 paper2ppt \
-  --arxiv "1811.12432,1707.06347" \
+  -a "1811.12432,1707.06347" \
   --query "Compare key frame detection approaches" \
   --slides 12 \
   --bullets 4
@@ -105,7 +105,7 @@ paper2ppt \
 Multiple PDFs from a directory:
 ```bash
 paper2ppt \
-  --pdf-dir "/path/to/pdfs" \
+  -d "/path/to/pdfs" \
   --query "Compare methods across papers" \
   --slides 12 \
   --bullets 4
@@ -114,8 +114,8 @@ paper2ppt \
 Mixed sources (arXiv + PDFs):
 ```bash
 paper2ppt \
-  --arxiv 1811.12432 \
-  --pdf "/path/to/paper.pdf" \
+  -a 1811.12432 \
+  -p "/path/to/paper.pdf" \
   --query "Compare approaches" \
   --slides 12 \
   --bullets 4
@@ -129,10 +129,10 @@ When you provide multiple arXiv IDs and/or multiple PDFs, Paper2ppt:
 - Generates a unified deck that answers the user query across sources
 
 Source input options:
-- Repeatable args: `--pdf file1.pdf --pdf file2.pdf`
-- Comma-separated lists: `--arxiv "1811.12432,1707.06347"`
-- Directory scanning: `--pdf-dir "/path/to/pdfs"`
-- Mixed inputs: any combination of `--arxiv`, `--pdf`, and `--pdf-dir`
+- Repeatable args: `-p file1.pdf -p file2.pdf`
+- Comma-separated lists: `-a "1811.12432,1707.06347"`
+- Directory scanning: `-d "/path/to/pdfs"`
+- Mixed inputs: any combination of `-a`, `-p`, and `-d`
 
 Notes:
 - Local PDF parsing uses text extraction (no OCR). Scanned PDFs with no embedded text require OCR.
@@ -163,7 +163,7 @@ Example output structure:
 
 Override the default root:
 ```bash
-paper2ppt --root-dir "/path/to/runs" --arxiv 1811.12432 --slides 10 --bullets 4
+paper2ppt --root-dir "/path/to/runs" -a 1811.12432 --slides 10 --bullets 4
 ```
 
 Set a default root once:
@@ -173,7 +173,7 @@ export PAPER2PPT_ROOT_DIR="/path/to/runs"
 
 Override work/output directories directly:
 ```bash
-paper2ppt --work-dir "/tmp/p2p_work" --out-dir "/tmp/p2p_outputs" --arxiv 1811.12432 --slides 10 --bullets 4
+paper2ppt --work-dir "/tmp/p2p_work" --out-dir "/tmp/p2p_outputs" -a 1811.12432 --slides 10 --bullets 4
 ```
 
 Notes on structure:
@@ -192,9 +192,9 @@ Notes on structure:
   - `outline-1.json`, `outline-2.json`, ... (all outline drafts)
 
 ## CLI Options
-- `--arxiv` arXiv link or ID (repeatable or comma-separated list)
-- `--pdf` path to a local PDF (repeatable or comma-separated list)
-- `--pdf-dir` directory containing PDFs (repeatable)
+- `-a`, `--arxiv` arXiv link or ID (repeatable or comma-separated list)
+- `-p`, `--pdf` path to a local PDF (repeatable or comma-separated list)
+- `-d`, `--pdf-dir` directory containing PDFs (repeatable)
 - `--slides` number of slides (required)
 - `--bullets` bullets per slide (required)
 - `--query` user query to guide the presentation theme (enables web search by default)

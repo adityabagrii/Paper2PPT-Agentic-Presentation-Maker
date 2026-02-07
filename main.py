@@ -76,9 +76,9 @@ def print_helper() -> None:
     print("  Per-run structure: <root>/<paper_title_slug>/{work,outputs}")
     print("")
     print("Common options:")
-    print("  --arxiv LIST           One or more arXiv IDs/URLs")
-    print("  --pdf LIST             One or more local PDF paths")
-    print("  --pdf-dir PATH         Directory of PDFs")
+    print("  -a, --arxiv LIST       One or more arXiv IDs/URLs")
+    print("  -p, --pdf LIST         One or more local PDF paths")
+    print("  -d, --pdf-dir PATH     Directory of PDFs")
     print("  --root-dir PATH        Override root runs directory")
     print("  --work-dir PATH        Override working directory")
     print("  --out-dir PATH         Override output directory")
@@ -97,39 +97,42 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Generate a Beamer slide deck from arXiv papers or local PDFs.")
     p.add_argument("--version", action="version", version=f"paper2ppt {VERSION}")
     p.add_argument(
+        "-a",
         "--arxiv",
         action="append",
         help="arXiv link or ID (repeatable or comma-separated list)",
     )
     p.add_argument(
+        "-p",
         "--pdf",
         action="append",
         help="Path to a local PDF file (repeatable or comma-separated list)",
     )
     p.add_argument(
+        "-d",
         "--pdf-dir",
         action="append",
         help="Directory containing PDFs (repeatable)",
     )
-    p.add_argument("--slides", type=int, required=True, help="Number of slides to generate")
-    p.add_argument("--bullets", type=int, required=True, help="Number of bullets per slide")
-    p.add_argument("--query", default="", help="User query to guide the presentation theme")
-    p.add_argument("--no-web-search", action="store_true", help="Disable web search even if --query is provided")
-    p.add_argument("--retry-slides", type=int, default=3, help="Retry count for slide generation")
+    p.add_argument("--slides", "-s", type=int, required=True, help="Number of slides to generate")
+    p.add_argument("--bullets", "-b", type=int, required=True, help="Number of bullets per slide")
+    p.add_argument("--query", "-q", default="", help="User query to guide the presentation theme")
+    p.add_argument("--no-web-search", "-ws", action="store_true", help="Disable web search even if --query is provided")
+    p.add_argument("--retry-slides", "-rs", type=int, default=3, help="Retry count for slide generation")
     p.add_argument(
         "--root-dir",
         default=None,
         help="Root directory for all runs (default: $PAPER2PPT_ROOT_DIR or ~/paper2ppt_runs)",
     )
-    p.add_argument("--work-dir", default=None, help="Working directory (overrides --root-dir)")
-    p.add_argument("--out-dir", default=None, help="Output directory (overrides --root-dir)")
-    p.add_argument("--max-summary-chunks", type=int, default=30, help="Max summary chunks to process")
-    p.add_argument("--no-approve", action="store_true", help="Skip outline approval loop")
-    p.add_argument("--skip-llm-sanity", action="store_true", help="Skip LLM sanity check")
-    p.add_argument("--model", default="nvidia/llama-3.1-nemotron-ultra-253b-v1", help="NVIDIA NIM model name")
-    p.add_argument("--use-figures", action="store_true", help="Enable figure selection and insertion")
-    p.add_argument("--with-speaker-notes", action="store_true", help="Generate speaker notes for each slide")
-    p.add_argument("--verbose", action="store_true", help="Verbose logging")
+    p.add_argument("--work-dir", "-wdir", default=None, help="Working directory (overrides --root-dir)")
+    p.add_argument("--out-dir", "odir", default=None, help="Output directory (overrides --root-dir)")
+    p.add_argument("--max-summary-chunks", "-msc", type=int, default=30, help="Max summary chunks to process")
+    p.add_argument("--no-approve", "-na", action="store_true", help="Skip outline approval loop")
+    p.add_argument("--skip-llm-sanity", "-llms", action="store_true", help="Skip LLM sanity check")
+    p.add_argument("--model", "-m", default="nvidia/llama-3.1-nemotron-ultra-253b-v1", help="NVIDIA NIM model name")
+    p.add_argument("--use-figures", "-uf", action="store_true", help="Enable figure selection and insertion")
+    p.add_argument("--with-speaker-notes", "-wsn", action="store_true", help="Generate speaker notes for each slide")
+    p.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     return p.parse_args()
 
 
