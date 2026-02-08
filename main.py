@@ -441,11 +441,11 @@ paper2ppt -a "1811.12432, 2404.04346, 2510.13891, 2503.13139, 2502.21271"\
     -s 15 -b 4 -q "Compare these key frame detection algorithms list their similarities and differences among each other and based on the results from the papers talk about the most efficient approach"\
     -rs 2 -msc 40 -llms -uf -wsn -n "KeyFrameComparisionWithImages" -gi
     
-paper2ppt -t "Importance of key-frame sampling in long video understanding"\
+paper2ppt -t "Dataset report for Key Frame Sampling, with best performers in each dataset"\
     -s 16 -b 5\
     -gf -minf 4 -maxf 7\
     -rs 2 -re 2\
     -llms -uf -msc 60\
     -maxres 20 -maxpdf 10 -tso\
-    --name "Why Key Frame Detection?"
+    --name "KFSDatasets"
 """

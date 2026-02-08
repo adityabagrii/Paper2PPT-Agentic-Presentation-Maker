@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -731,7 +732,8 @@ Generate slide #{idx}: {slide_title}
 
         if self.cfg.arxiv_ids:
             logger.info("Fetching arXiv metadata and sources...")
-            for arxiv_id in self.cfg.arxiv_ids:
+
+            def _load_arxiv(arxiv_id: str) -> dict:
                 try:
                     meta = self.arxiv_client.get_metadata(arxiv_id)
                     title = meta.get("title", arxiv_id)
@@ -785,9 +787,18 @@ Generate slide #{idx}: {slide_title}
                     )
                 except Exception:
                     logger.exception("Skipping arXiv source due to errors: %s", arxiv_id)
+                return None
+
+            max_workers = min(2, self.cfg.max_llm_workers, len(self.cfg.arxiv_ids))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_load_arxiv, a): a for a in self.cfg.arxiv_ids}
+                for fut in as_completed(futures):
+                    item = fut.result()
+                    if item:
+                        sources.append(item)
 
         if self.cfg.pdf_paths:
-            for pdf_path in self.cfg.pdf_paths:
+            def _load_pdf(pdf_path: Path) -> dict:
                 logger.info("Reading local PDF: %s", pdf_path)
                 pdf_work = self.cfg.work_dir / f"pdf_{pdf_path.stem}"
                 pdf_data = extract_pdf_content(pdf_path, pdf_work)
@@ -802,17 +813,23 @@ Generate slide #{idx}: {slide_title}
                 if len(paper_text) <= 200 and not images_block:
                     raise RuntimeError("PDF text too small and no images found; scanned PDF may require OCR.")
 
-                sources.append(
-                    {
-                        "type": "pdf",
-                        "id": str(pdf_path),
-                        "title": pdf_data["title"],
-                        "abstract": "",
-                        "url": str(pdf_path),
-                        "text": paper_text,
-                        "images": pdf_data["images"],
-                    }
-                )
+                return {
+                    "type": "pdf",
+                    "id": str(pdf_path),
+                    "title": pdf_data["title"],
+                    "abstract": "",
+                    "url": str(pdf_path),
+                    "text": paper_text,
+                    "images": pdf_data["images"],
+                }
+
+            max_workers = min(2, self.cfg.max_llm_workers, len(self.cfg.pdf_paths))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_load_pdf, p): p for p in self.cfg.pdf_paths}
+                for fut in as_completed(futures):
+                    item = fut.result()
+                    if item:
+                        sources.append(item)
 
         if self.cfg.pdf_paths:
             print("\nPDF sources:")
@@ -894,27 +911,63 @@ Generate slide #{idx}: {slide_title}
         if N == 0:
             raise RuntimeError("No text chunks available for summarization.")
         prev_summary_preview = ""
-        with tqdm(
-            range(1, N + 1),
-            desc="Summarize",
-            unit="chunk",
-            ncols=TQDM_NCOLS,
-            dynamic_ncols=False,
-        ) as bar:
-            for i in bar:
-                self._checkpoint("Summarize", i, N)
-                chunk_preview = self._preview_text(chunks[i - 1], max_len=50)
-                bar.set_postfix_str(f"chunk: {chunk_preview} | prev: {prev_summary_preview}")
-                s = self.summarize_chunk(
-                    i,
-                    chunks[i - 1],
-                    meta,
-                    (self.cfg.user_query + "\n" + global_feedback).strip(),
-                    web_context,
-                    sources_block,
-                )
-                sums.append(s)
-                prev_summary_preview = self._preview_text(s, max_len=50)
+        max_workers = min(2, self.cfg.max_llm_workers, N)
+        if N > 1 and max_workers > 1:
+            self._checkpoint("Summarize (parallel)", 0, N)
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {}
+                for i in range(1, N + 1):
+                    futures[
+                        pool.submit(
+                            self.summarize_chunk,
+                            i,
+                            chunks[i - 1],
+                            meta,
+                            (self.cfg.user_query + "\n" + global_feedback).strip(),
+                            web_context,
+                            sources_block,
+                        )
+                    ] = i
+                results: dict[int, str] = {}
+                with tqdm(
+                    total=N,
+                    desc="Summarize",
+                    unit="chunk",
+                    ncols=TQDM_NCOLS,
+                    dynamic_ncols=False,
+                ) as bar:
+                    for fut in as_completed(futures):
+                        i = futures[fut]
+                        s = fut.result()
+                        results[i] = s
+                        prev_summary_preview = self._preview_text(s, max_len=50)
+                        bar.set_postfix_str(f"chunk: {i}/{N} | prev: {prev_summary_preview}")
+                        bar.update(1)
+                for i in range(1, N + 1):
+                    if i in results:
+                        sums.append(results[i])
+        else:
+            with tqdm(
+                range(1, N + 1),
+                desc="Summarize",
+                unit="chunk",
+                ncols=TQDM_NCOLS,
+                dynamic_ncols=False,
+            ) as bar:
+                for i in bar:
+                    self._checkpoint("Summarize", i, N)
+                    chunk_preview = self._preview_text(chunks[i - 1], max_len=50)
+                    bar.set_postfix_str(f"chunk: {chunk_preview} | prev: {prev_summary_preview}")
+                    s = self.summarize_chunk(
+                        i,
+                        chunks[i - 1],
+                        meta,
+                        (self.cfg.user_query + "\n" + global_feedback).strip(),
+                        web_context,
+                        sources_block,
+                    )
+                    sums.append(s)
+                    prev_summary_preview = self._preview_text(s, max_len=50)
 
         merged_summary = "\n\n".join(sums)
 
@@ -1770,15 +1823,14 @@ Topic: {self.cfg.topic}
         if pdf_urls:
             download_dir = self.cfg.work_dir / "web_pdfs"
             download_dir.mkdir(parents=True, exist_ok=True)
-            for u in pdf_urls:
+            def _download_pdf(u: str) -> Optional[Path]:
                 try:
                     name = Path(u.split("?")[0]).name or "paper.pdf"
                     if not name.lower().endswith(".pdf"):
                         name = name + ".pdf"
                     target = download_dir / name
                     if target.exists() and target.stat().st_size > 0:
-                        self.cfg.pdf_paths.append(target)
-                        continue
+                        return target
                     import requests
 
                     r = requests.get(u, stream=True, timeout=60)
@@ -1787,9 +1839,18 @@ Topic: {self.cfg.topic}
                         for chunk in r.iter_content(chunk_size=1024 * 256):
                             if chunk:
                                 f.write(chunk)
-                    self.cfg.pdf_paths.append(target)
+                    return target
                 except Exception:
                     logger.exception("Failed to download PDF from %s", u)
+                    return None
+
+            max_workers = min(2, self.cfg.max_llm_workers, len(pdf_urls))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_download_pdf, u): u for u in pdf_urls}
+                for fut in as_completed(futures):
+                    p = fut.result()
+                    if p:
+                        self.cfg.pdf_paths.append(p)
 
     @staticmethod
     def print_outline(outline: DeckOutline) -> None:
@@ -2039,8 +2100,12 @@ Deck title: {outline.deck_title}
 Slide titles: {[s.title for s in outline.slides]}
 """.strip()
         raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        if not raw.strip():
+            logger.warning("Deck diagram LLM returned empty output; skipping deck diagrams.")
+            return
+        js = OutlineBuilder.try_extract_json(raw)
         try:
-            obj = json.loads(raw)
+            obj = json.loads(js or raw)
         except Exception:
             fix = safe_invoke(
                 logger,
@@ -2048,7 +2113,12 @@ Slide titles: {[s.title for s in outline.slides]}
                 "Return ONLY valid JSON for the schema. Fix this:\n" + raw[:1800],
                 retries=6,
             )
-            obj = json.loads(fix)
+            js = OutlineBuilder.try_extract_json(fix)
+            try:
+                obj = json.loads(js or fix)
+            except Exception:
+                logger.warning("Deck diagram JSON parse failed; skipping deck diagrams.")
+                return
 
         diagrams = obj.get("diagrams", [])
         if not isinstance(diagrams, list) or not diagrams:
