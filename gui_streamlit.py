@@ -402,6 +402,15 @@ def main() -> None:
             auto_comparisons=False,
             baseline_framing=False,
             quant_results=False,
+            teaching_mode=False,
+            read_mode=False,
+            viva_mode=False,
+            describe_experiments=False,
+            exam_prep=False,
+            implementation_notes=False,
+            index_paper=False,
+            index_search_query="",
+            daily_brief=False,
         )
 
         cfg.out_dir.mkdir(parents=True, exist_ok=True)

@@ -29,6 +29,7 @@ try:
         flatten_tex,
         write_beamer,
     )
+    from .memory_utils import load_journal_for_date, now_iso, upsert_paper
 except Exception:
     from arxiv_utils import download_and_extract_arxiv_source, get_arxiv_metadata, extract_arxiv_id
     from llm import safe_invoke
@@ -44,6 +45,7 @@ except Exception:
         flatten_tex,
         write_beamer,
     )
+    from memory_utils import load_journal_for_date, now_iso, upsert_paper
 
 logger = logging.getLogger("paper2ppt")
 TQDM_NCOLS = 100
@@ -110,6 +112,27 @@ class RunConfig:
     auto_comparisons: bool
     baseline_framing: bool
     quant_results: bool
+    teaching_mode: bool
+    read_mode: bool
+    viva_mode: bool
+    describe_experiments: bool
+    exam_prep: bool
+    implementation_notes: bool
+    index_paper: bool
+    index_search_query: str
+    daily_brief: bool
+
+
+@dataclass
+class PaperContext:
+    meta: Dict[str, Any]
+    paper_text: str
+    merged_summary: str
+    sources_block: str
+    source_label: str
+    web_context: str
+    citations: List[str]
+    sources: List[Dict[str, Any]]
 
 
 class OutlineJSONStore:
@@ -478,6 +501,44 @@ Summary: {summary}
                 out[-j] = w
         return out
 
+    def _ensure_pause_question_titles(self, titles: List[str], target: int = 2) -> List[str]:
+        """Ensure pause question titles exist in teaching mode.
+        
+        Args:
+            titles (List[str]):
+            target (int):
+        
+        Returns:
+            List[str]:
+        """
+        if not self.cfg.teaching_mode:
+            return titles
+        out = list(titles)
+        existing = [t for t in out if "pause question" in t.lower()]
+        if len(existing) >= target:
+            return out
+        # Replace mid and near-end slides to keep length stable
+        candidates = []
+        if out:
+            candidates.append(len(out) // 2)
+        if len(out) > 3:
+            candidates.append(len(out) - 2)
+        labels = [
+            "Pause Question: Check Understanding",
+            "Pause Question: Apply the Idea",
+        ]
+        idx = 0
+        for c in candidates:
+            if len(existing) >= target:
+                break
+            if 0 <= c < len(out) and "pause question" not in out[c].lower():
+                out[c] = labels[idx % len(labels)]
+                idx += 1
+                existing.append(out[c])
+        if len(existing) < target and out:
+            out[-1] = labels[min(idx, len(labels) - 1)]
+        return out
+
     @staticmethod
     def _preview_text(s: str, max_len: int = 60) -> str:
         """Function preview text.
@@ -710,6 +771,12 @@ Chunk:
             comparison_rule = (
                 "- Include explicit comparison slides (e.g., full video vs key frames; uniform sampling vs learned selection)\n"
             )
+        teaching_rule = ""
+        if self.cfg.teaching_mode:
+            teaching_rule = (
+                "- Teaching mode: prioritize intuition and examples over equations.\n"
+                "- Include 1-2 slides labeled 'Pause Question: ...' for student reflection.\n"
+            )
 
         prompt = f"""
 Return ONLY JSON.
@@ -728,6 +795,7 @@ Rules:
 - Deck title must reflect the user query and the source titles when provided
 {query_rule}
 {comparison_rule}
+{teaching_rule}
 
 Title: {meta['title']}
 Abstract: {meta['abstract']}
@@ -832,6 +900,8 @@ Summary: {summary}
                 if len(base) < self.cfg.slide_count:
                     base += [f"Slide {i+1}" for i in range(len(base), self.cfg.slide_count)]
                 obj["slide_titles"] = base[: self.cfg.slide_count]
+        if self.cfg.teaching_mode:
+            obj["slide_titles"] = self._ensure_pause_question_titles(obj.get("slide_titles", []))
         return obj
 
     def propose_diagram_plan(
@@ -1044,6 +1114,16 @@ Summary: {summary}
             if user_query
             else ""
         )
+        teaching_rule = ""
+        pause_rule = ""
+        if self.cfg.teaching_mode:
+            teaching_rule = (
+                "\n- Teaching mode: prefer intuition and concrete examples; avoid equations and heavy jargon.\n"
+            )
+            if "pause question" in (slide_title or "").lower():
+                pause_rule = (
+                    "\n- This is a pause question slide: bullets must be student questions (not answers).\n"
+                )
 
         notes_schema = (
             '  "speaker_notes": "string",             // 1-3 sentences\n'
@@ -1081,6 +1161,8 @@ Rules:
 {evidence_rule}
 {baseline_rule}
 {query_rule}
+{teaching_rule}
+{pause_rule}
 
 Paper title: {meta['title']}
 Abstract: {meta['abstract']}
@@ -1507,6 +1589,10 @@ Generate slide #{idx}: {slide_title}
             titles_obj["slide_titles"] = self._ensure_comparison_titles(
                 titles_obj.get("slide_titles", [])
             )
+        if self.cfg.teaching_mode:
+            titles_obj["slide_titles"] = self._ensure_pause_question_titles(
+                titles_obj.get("slide_titles", [])
+            )
         self._print_section(
             "Slide titles",
             [t for t in titles_obj.get("slide_titles", [])],
@@ -1526,6 +1612,10 @@ Generate slide #{idx}: {slide_title}
             titles_obj = revised
             if self.cfg.auto_comparisons:
                 titles_obj["slide_titles"] = self._ensure_comparison_titles(
+                    titles_obj.get("slide_titles", [])
+                )
+            if self.cfg.teaching_mode:
+                titles_obj["slide_titles"] = self._ensure_pause_question_titles(
                     titles_obj.get("slide_titles", [])
                 )
             self._print_section(
@@ -1707,6 +1797,13 @@ Generate slide #{idx}: {slide_title}
         query_block = f"\nUser query:\n{user_query}\n" if user_query else ""
         web_block = f"\nWeb sources:\n{web_context}\n" if web_context else ""
         sources_block = f"\nSources:\n{sources_block}\n" if sources_block else ""
+        teaching_rule = ""
+        if self.cfg.teaching_mode:
+            teaching_rule = (
+                "\nTeaching mode:\n"
+                "- prioritize intuition and examples over equations\n"
+                "- include 1-2 slide titles labeled 'Pause Question: ...'\n"
+            )
 
         prompt = f"""
 Return ONLY JSON.
@@ -1729,7 +1826,7 @@ Revise the slide titles accordingly while keeping exactly {self.cfg.slide_count}
 Title: {meta['title']}
 Abstract: {meta['abstract']}
 Summary: {summary}
-{query_block}{web_block}{sources_block}
+{query_block}{web_block}{sources_block}{teaching_rule}
 """.strip()
 
         raw = safe_invoke(logger, self.llm, prompt, retries=6)
@@ -1741,6 +1838,8 @@ Summary: {summary}
         obj = json.loads(js)
         if len(obj.get("slide_titles", [])) != self.cfg.slide_count:
             raise RuntimeError(f"slide_titles must have exactly {self.cfg.slide_count} entries")
+        if self.cfg.teaching_mode:
+            obj["slide_titles"] = self._ensure_pause_question_titles(obj.get("slide_titles", []))
         return obj
 
 
@@ -2946,6 +3045,10 @@ Slide titles: {[s.title for s in outline.slides]}
                     titles_obj["slide_titles"] = self.outline_builder._ensure_comparison_titles(
                         titles_obj.get("slide_titles", [])
                     )
+                if self.cfg.teaching_mode:
+                    titles_obj["slide_titles"] = self.outline_builder._ensure_pause_question_titles(
+                        titles_obj.get("slide_titles", [])
+                    )
                 if self.cfg.diagram_intent_aware:
                     diagram_plan = self.outline_builder.propose_diagram_plan(
                         titles_obj.get("slide_titles", []),
@@ -3104,6 +3207,421 @@ Slide titles: {[s.title for s in outline.slides]}
 
         print("Max rounds reached; proceeding with latest outline.")
         return outline, meta
+
+    def build_paper_context(self) -> PaperContext:
+        """Build paper context without slide generation."""
+        sources: List[Dict[str, Any]] = []
+
+        if self.cfg.arxiv_ids:
+            logger.info("Fetching arXiv metadata and sources...")
+
+            def _load_arxiv(arxiv_id: str) -> dict:
+                try:
+                    meta = self.arxiv_client.get_metadata(arxiv_id)
+                    title = meta.get("title", arxiv_id)
+                    abstract = meta.get("abstract", "")
+                    url = meta.get("url", "")
+
+                    logger.info("Downloading and extracting arXiv source: %s", arxiv_id)
+                    arxiv_work = self.cfg.work_dir / f"arxiv_{arxiv_id}"
+                    src_dir = None
+                    last_err = None
+                    for attempt in range(1, 4):
+                        try:
+                            src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
+                            break
+                        except Exception as e:
+                            last_err = e
+                            logger.warning("arXiv source download failed (%s/%s) for %s", attempt, 3, arxiv_id)
+                    if src_dir is None:
+                        raise RuntimeError(f"Failed to download arXiv source for {arxiv_id}: {last_err}")
+
+                    main_tex = None
+                    last_err = None
+                    for attempt in range(1, 4):
+                        try:
+                            main_tex = find_main_tex_file(src_dir)
+                            break
+                        except Exception as e:
+                            last_err = e
+                            logger.warning("Main TeX discovery failed (%s/%s) for %s", attempt, 3, arxiv_id)
+                    if main_tex is None:
+                        raise RuntimeError(f"Failed to find main TeX for {arxiv_id}: {last_err}")
+
+                    flat = flatten_tex(main_tex, max_files=120)
+                    paper_text = build_paper_text(flat, max_chars=None)
+
+                    logger.info("Main TeX file: %s", main_tex)
+                    logger.info("paper_text chars: %s", len(paper_text))
+                    if len(paper_text) <= 500:
+                        raise RuntimeError("paper_text too small; main tex likely wrong.")
+
+                    return {
+                        "type": "arxiv",
+                        "id": arxiv_id,
+                        "title": title,
+                        "abstract": abstract,
+                        "url": url,
+                        "text": paper_text,
+                        "images": [],
+                    }
+                except Exception:
+                    logger.exception("Skipping arXiv source due to errors: %s", arxiv_id)
+                return None
+
+            max_workers = min(2, self.cfg.max_llm_workers, len(self.cfg.arxiv_ids))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_load_arxiv, a): a for a in self.cfg.arxiv_ids}
+                for fut in as_completed(futures):
+                    item = fut.result()
+                    if item:
+                        sources.append(item)
+
+        if self.cfg.pdf_paths:
+            def _load_pdf(pdf_path: Path) -> dict:
+                logger.info("Reading local PDF: %s", pdf_path)
+                pdf_work = self.cfg.work_dir / f"pdf_{pdf_path.stem}"
+                pdf_data = extract_pdf_content(pdf_path, pdf_work)
+                img_lines = []
+                for img in pdf_data["images"]:
+                    img_lines.append(f"Image (page {img['page']}): {img['path']}")
+                images_block = "\n".join(img_lines)
+                paper_text = pdf_data["text"]
+                if images_block:
+                    paper_text = f"{paper_text}\n\n[IMAGES]\n{images_block}".strip()
+                logger.info("PDF text chars: %s", len(paper_text))
+                if len(paper_text) <= 200 and not images_block:
+                    raise RuntimeError("PDF text too small and no images found; scanned PDF may require OCR.")
+
+                return {
+                    "type": "pdf",
+                    "id": str(pdf_path),
+                    "title": pdf_data["title"],
+                    "abstract": "",
+                    "url": str(pdf_path),
+                    "text": paper_text,
+                    "images": pdf_data["images"],
+                }
+
+            max_workers = min(2, self.cfg.max_llm_workers, len(self.cfg.pdf_paths))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_load_pdf, p): p for p in self.cfg.pdf_paths}
+                for fut in as_completed(futures):
+                    item = fut.result()
+                    if item:
+                        sources.append(item)
+
+        if not sources:
+            raise RuntimeError("No sources collected. Provide arXiv/PDF sources or use --topic.")
+
+        if len(sources) == 1:
+            meta = {"title": sources[0]["title"], "abstract": sources[0].get("abstract", "")}
+        else:
+            meta = {"title": "Multiple Sources", "abstract": "Multiple documents provided."}
+
+        if self.cfg.arxiv_ids and not self.cfg.pdf_paths and len(self.cfg.arxiv_ids) == 1:
+            source_label = f"arXiv:{self.cfg.arxiv_ids[0]}"
+        elif self.cfg.arxiv_ids and not self.cfg.pdf_paths:
+            source_label = f"arXiv ({len(self.cfg.arxiv_ids)})"
+        elif self.cfg.pdf_paths and not self.cfg.arxiv_ids:
+            source_label = f"Local PDFs ({len(self.cfg.pdf_paths)})"
+        else:
+            source_label = f"Mixed sources ({len(sources)})"
+
+        sources_block_lines = []
+        for i, s in enumerate(sources, 1):
+            src_tag = "arXiv" if s["type"] == "arxiv" else "PDF"
+            sources_block_lines.append(f"{i}. [{src_tag}] {s['title']} ({s['id']})")
+        sources_block = "\n".join(sources_block_lines)
+
+        blocks = []
+        for s in sources:
+            blocks.append(f"[SOURCE: {s['title']}]\n{s['text']}")
+        paper_text = "\n\n".join(blocks)
+
+        web_context = ""
+        web_sources = []
+        if self.cfg.user_query and self.cfg.web_search:
+            logger.info("Running web search for query: %s", self.cfg.user_query)
+            web_sources = search_web(self.cfg.user_query, max_results=5)
+            if web_sources:
+                lines = []
+                for i, s in enumerate(web_sources, 1):
+                    lines.append(f"{i}. {s['title']} - {s['url']}\n   {s['snippet']}")
+                web_context = "\n".join(lines)
+
+        citations_base = []
+        for s in sources:
+            if s["type"] == "arxiv":
+                if s.get("url"):
+                    citations_base.append(f"{s['title']} - {s['url']}")
+                else:
+                    citations_base.append(f"arXiv:{s['id']}")
+            else:
+                citations_base.append(f"{s['title']} - {s['id']}")
+        if web_sources:
+            citations_base.extend([f"{s['title']} - {s['url']}" for s in web_sources])
+
+        merged_summary = self.outline_builder.summarize_text(
+            paper_text,
+            meta,
+            global_feedback="",
+            web_context=web_context,
+            sources_block=sources_block,
+        )
+
+        return PaperContext(
+            meta=meta,
+            paper_text=paper_text,
+            merged_summary=merged_summary,
+            sources_block=sources_block,
+            source_label=source_label,
+            web_context=web_context,
+            citations=citations_base,
+            sources=sources,
+        )
+
+    def _write_markdown(self, name: str, content: str) -> Path:
+        path = self.cfg.out_dir / name
+        path.write_text(content.strip() + "\n", encoding="utf-8")
+        return path
+
+    def generate_reading_notes(self, ctx: PaperContext) -> Path:
+        prompt = f"""
+You are a paper-reading assistant. Produce 1-2 pages of structured markdown.
+Use the exact section headings below:
+
+## Problem
+## Key Idea
+## Method
+## Results
+## Limitations
+## What I Learned
+
+Rules:
+- Be concise but specific.
+- Prefer short paragraphs and bullets.
+- Stay faithful to the provided context only.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:4000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        return self._write_markdown("reading_notes.md", raw)
+
+    def generate_viva_notes(self, ctx: PaperContext) -> Path:
+        prompt = f"""
+You are helping a student prepare for a viva. Return structured markdown with these sections:
+
+## Common Questions
+## Why The Method Works
+## Failure Cases
+## Comparison Traps Reviewers Ask About
+
+Rules:
+- Use bullets.
+- Keep answers crisp and defensible.
+- Tie to the paper context only.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:4000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        return self._write_markdown("viva_notes.md", raw)
+
+    def generate_experiment_description(self, ctx: PaperContext) -> Path:
+        prompt = f"""
+Generate a clear experiment description in markdown with sections:
+
+## Dataset Description
+## Baselines
+## Metrics
+## Protocol
+
+Rules:
+- Be precise and structured.
+- Only use what is supported by the provided context.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:4000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        return self._write_markdown("experiment_description.md", raw)
+
+    def generate_exam_prep(self, ctx: PaperContext) -> Path:
+        prompt = f"""
+Create exam prep materials in markdown with sections:
+
+## MCQs
+Provide 5 questions. Each must include options A-D and the correct answer.
+
+## Short Answers
+Provide 5 short-answer questions with brief model answers.
+
+## Derivation Questions
+Provide 3 derivation-style questions; include expected steps or outline.
+
+## Trick Questions
+Provide 3 trick questions and explain the trap.
+
+Rules:
+- Keep questions grounded in the paper context.
+- Avoid requiring external knowledge.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:4000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        return self._write_markdown("exam_prep.md", raw)
+
+    def generate_implementation_notes(self, ctx: PaperContext) -> Path:
+        prompt = f"""
+Generate implementation notes in markdown with sections:
+
+## Model Components
+## Training Loop Sketch
+## Loss Functions
+## Gotchas
+
+Rules:
+- Be practical and specific.
+- Include caveats when details are missing.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:4000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        return self._write_markdown("implementation_notes.md", raw)
+
+    def index_paper(self, ctx: PaperContext) -> dict:
+        prompt = f"""
+Return ONLY JSON.
+
+Schema:
+{{
+  "summary": "string",
+  "key_claims": ["string", "..."],
+  "methods": ["string", "..."],
+  "datasets": ["string", "..."],
+  "keywords": ["string", "..."]
+}}
+
+Rules:
+- Keep lists short (3-7 items).
+- Use plain text only.
+- Stay faithful to the provided context.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:4000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        js = OutlineBuilder.try_extract_json(raw)
+        if js is None:
+            fix = safe_invoke(
+                logger,
+                self.llm,
+                "Return ONLY valid JSON for the schema. Fix this:\n" + raw[:1800],
+                retries=6,
+            )
+            js = OutlineBuilder.try_extract_json(fix) or fix
+        try:
+            obj = json.loads(js)
+        except Exception:
+            obj = {"summary": "", "key_claims": [], "methods": [], "datasets": [], "keywords": []}
+
+        entry = {
+            "paper_id": ctx.source_label,
+            "title": ctx.meta.get("title", ctx.source_label),
+            "summary": obj.get("summary", ""),
+            "key_claims": obj.get("key_claims", []) or [],
+            "methods": obj.get("methods", []) or [],
+            "datasets": obj.get("datasets", []) or [],
+            "keywords": obj.get("keywords", []) or [],
+            "sources": ctx.sources_block,
+            "updated_at": now_iso(),
+        }
+        upsert_paper(entry)
+        (self.cfg.out_dir / "paper_index_entry.json").write_text(
+            json.dumps(entry, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return entry
+
+    def generate_daily_brief(self, date_str: str) -> Path:
+        entries = load_journal_for_date(date_str)
+        if not entries:
+            content = f"# Daily Research Brief ({date_str})\n\nNo runs recorded today.\n"
+            return self._write_markdown(f"daily_brief_{date_str}.md", content)
+
+        blocks = []
+        for e in entries:
+            blocks.append(
+                "\n".join(
+                    [
+                        f"- time: {e.get('time','')}",
+                        f"- mode: {', '.join(e.get('modes', []) or [])}",
+                        f"- source: {e.get('source_label','')}",
+                        f"- outputs: {', '.join(e.get('outputs', []) or [])}",
+                        f"- notes: {e.get('summary_excerpt','')[:400]}",
+                    ]
+                )
+            )
+        prompt = f"""
+You are a research assistant writing a daily brief in markdown.
+Summarize:
+
+## Papers Read Today
+## Ideas Explored
+## TODOs Inferred From Runs
+
+Be concise and practical. Only use the provided entries.
+
+Date: {date_str}
+Entries:
+{chr(10).join(blocks)}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        return self._write_markdown(f"daily_brief_{date_str}.md", raw)
+
+    def run_non_slide(self) -> List[Path]:
+        self.sanity_checks()
+        self.prepare_topic_sources()
+        ctx = self.build_paper_context()
+
+        outputs: List[Path] = []
+        if self.cfg.read_mode:
+            outputs.append(self.generate_reading_notes(ctx))
+        if self.cfg.viva_mode:
+            outputs.append(self.generate_viva_notes(ctx))
+        if self.cfg.describe_experiments:
+            outputs.append(self.generate_experiment_description(ctx))
+        if self.cfg.exam_prep:
+            outputs.append(self.generate_exam_prep(ctx))
+        if self.cfg.implementation_notes:
+            outputs.append(self.generate_implementation_notes(ctx))
+        if self.cfg.index_paper:
+            self.index_paper(ctx)
+            outputs.append(self.cfg.out_dir / "paper_index_entry.json")
+
+        return outputs
 
     def run(self) -> Tuple[DeckOutline, Optional[Path], Optional[Path]]:
         """Run.

@@ -8,6 +8,7 @@ import re
 import sys
 import hashlib
 import subprocess
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,12 +18,14 @@ try:
     from .llm import LLMConfig, init_llm
     from .logging_utils import setup_logging
     from .pipeline import Pipeline, RunConfig
+    from .memory_utils import append_journal, search_index, today_str
 except Exception:
     sys.path.append(str(Path(__file__).resolve().parent))
     from arxiv_utils import extract_arxiv_id, get_arxiv_metadata
     from llm import LLMConfig, init_llm
     from logging_utils import setup_logging
     from pipeline import Pipeline, RunConfig
+    from memory_utils import append_journal, search_index, today_str
 
 logger = logging.getLogger("paper2ppt")
 VERSION = "0.6.4"
@@ -152,8 +155,8 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="Direct PDF URL (repeatable or comma-separated list)",
     )
-    p.add_argument("--slides", "-s", type=int, required=True, help="Number of slides to generate")
-    p.add_argument("--bullets", "-b", type=int, required=True, help="Number of bullets per slide")
+    p.add_argument("--slides", "-s", type=int, default=12, help="Number of slides to generate")
+    p.add_argument("--bullets", "-b", type=int, default=4, help="Number of bullets per slide")
     p.add_argument("--query", "-q", default="", help="User query to guide the presentation theme")
     p.add_argument("--name", "-n", default="", help="Custom run name for output directory")
     p.add_argument("--no-web-search", "-ws", action="store_true", help="Disable web search even if --query is provided")
@@ -215,6 +218,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--with-speaker-notes", "-wsn", action="store_true", help="Generate speaker notes for each slide")
     p.add_argument("--titles-only", action="store_true", help="Stop after slide titles (skip slide generation)")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    p.add_argument("--read", action="store_true", help="Generate reading notes (no slides)")
+    p.add_argument("--viva-mode", action="store_true", help="Generate viva prep notes (no slides)")
+    p.add_argument("--describe-experiments", action="store_true", help="Generate experiment description (no slides)")
+    p.add_argument("--exam-prep", action="store_true", help="Generate exam prep materials (no slides)")
+    p.add_argument("--implementation-notes", action="store_true", help="Generate implementation notes (no slides)")
+    p.add_argument("--teaching-mode", action="store_true", help="Teaching-optimized slides with pause questions")
+    p.add_argument("--index-paper", action="store_true", help="Index a paper into local memory")
+    p.add_argument("--search", default="", help="Search the local paper index")
+    p.add_argument("--daily-brief", action="store_true", help="Generate a daily research brief")
     return p.parse_args()
 
 
@@ -339,15 +351,29 @@ def main() -> int:
     load_dotenv(env_path, override=False)
     args = parse_args()
 
+    mode_daily_brief = bool(args.daily_brief)
+    mode_search = bool((args.search or "").strip())
+    non_slide_modes = any(
+        [
+            args.read,
+            args.viva_mode,
+            args.describe_experiments,
+            args.exam_prep,
+            args.implementation_notes,
+            args.index_paper,
+        ]
+    )
+
     ensure_requirements_installed()
 
     arxiv_inputs = _split_list_args(args.arxiv or [])
     pdf_paths = _collect_pdfs(args.pdf or [], args.pdf_dir or [])
     pdf_urls = _split_list_args(args.pdf_url or [])
     if not args.resume:
-        if not arxiv_inputs and not pdf_paths and not pdf_urls and not (args.topic or "").strip():
-            logger.error("Provide sources or use --topic for topic-only mode.")
-            return 2
+        if not mode_daily_brief and not mode_search:
+            if not arxiv_inputs and not pdf_paths and not pdf_urls and not (args.topic or "").strip():
+                logger.error("Provide sources or use --topic for topic-only mode.")
+                return 2
 
     arxiv_ids: list[str] = []
     if arxiv_inputs:
@@ -368,6 +394,10 @@ def main() -> int:
         paper_title = pdf_paths[0].stem
     elif pdf_urls:
         paper_title = Path(pdf_urls[0].split("?")[0]).stem or "paper"
+    elif mode_daily_brief:
+        paper_title = f"DailyBrief_{today_str()}"
+    elif mode_search:
+        paper_title = f"IndexSearch_{_query_summary(args.search)}"
 
     if args.resume:
         resume_path = Path(args.resume).expanduser().resolve()
@@ -387,11 +417,12 @@ def main() -> int:
         base_name = _slugify(args.name) if args.name else _slugify(paper_title)
         run_name = base_name
         # If user explicitly set --name, honor it verbatim (no query prefixing).
-        if args.query and not args.name:
-            if len(arxiv_ids) + len(pdf_paths) > 1:
-                run_name = f"Q-{_query_summary(args.query)}-{base_name or 'MultiSource'}"
-            else:
-                run_name = f"Q-{_query_summary(args.query)}-{base_name}"
+        if not (mode_daily_brief or mode_search):
+            if args.query and not args.name:
+                if len(arxiv_ids) + len(pdf_paths) > 1:
+                    run_name = f"Q-{_query_summary(args.query)}-{base_name or 'MultiSource'}"
+                else:
+                    run_name = f"Q-{_query_summary(args.query)}-{base_name}"
         run_dir = run_root / run_name
 
     work_dir = Path(args.work_dir).expanduser().resolve() if args.work_dir else (run_dir / "work")
@@ -442,6 +473,15 @@ def main() -> int:
         auto_comparisons=bool(args.auto_comparisons),
         baseline_framing=bool(args.baseline_framing),
         quant_results=bool(args.quant_results),
+        teaching_mode=bool(args.teaching_mode),
+        read_mode=bool(args.read),
+        viva_mode=bool(args.viva_mode),
+        describe_experiments=bool(args.describe_experiments),
+        exam_prep=bool(args.exam_prep),
+        implementation_notes=bool(args.implementation_notes),
+        index_paper=bool(args.index_paper),
+        index_search_query=(args.search or "").strip(),
+        daily_brief=bool(args.daily_brief),
     )
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -449,15 +489,106 @@ def main() -> int:
         (cfg.out_dir / "query.txt").write_text(cfg.user_query + "\n", encoding="utf-8")
     setup_logging(args.verbose, log_path=cfg.out_dir / "run.log")
 
+    if mode_search:
+        results = search_index(cfg.index_search_query, limit=10)
+        if results:
+            lines = ["# Search Results", ""]
+            for i, r in enumerate(results, 1):
+                lines.append(f"## {i}. {r.get('title','')}")
+                lines.append(f"- paper_id: {r.get('paper_id','')}")
+                if r.get("summary"):
+                    lines.append(f"- summary: {r.get('summary','')}")
+                if r.get("key_claims"):
+                    lines.append(f"- key_claims: {', '.join(r.get('key_claims', [])[:5])}")
+                if r.get("methods"):
+                    lines.append(f"- methods: {', '.join(r.get('methods', [])[:5])}")
+                if r.get("datasets"):
+                    lines.append(f"- datasets: {', '.join(r.get('datasets', [])[:5])}")
+                lines.append("")
+        else:
+            lines = ["# Search Results", "", "No matches found."]
+        out_path = cfg.out_dir / "search_results.md"
+        out_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+        print("\nOutput directory:", cfg.out_dir.resolve())
+        print("Search results:", out_path.name)
+        return 0
+
     try:
         logger.info("Initializing LLM...")
         llm = init_llm(LLMConfig(model=cfg.llm_model, api_key=cfg.llm_api_key))
 
         pipeline = Pipeline(cfg, llm)
+        if mode_daily_brief:
+            date_str = today_str()
+            out_path = pipeline.generate_daily_brief(date_str)
+            print("\nOutput directory:", cfg.out_dir.resolve())
+            print("Daily brief:", out_path.name)
+            return 0
+
+        if non_slide_modes:
+            outputs = pipeline.run_non_slide()
+            summary_excerpt = ""
+            if outputs:
+                try:
+                    summary_excerpt = outputs[0].read_text(encoding="utf-8")[:800]
+                except Exception:
+                    summary_excerpt = ""
+            modes = []
+            if args.read:
+                modes.append("read")
+            if args.viva_mode:
+                modes.append("viva")
+            if args.describe_experiments:
+                modes.append("describe_experiments")
+            if args.exam_prep:
+                modes.append("exam_prep")
+            if args.implementation_notes:
+                modes.append("implementation_notes")
+            if args.index_paper:
+                modes.append("index_paper")
+            append_journal(
+                {
+                    "date": today_str(),
+                    "time": time.strftime("%H:%M:%S"),
+                    "modes": modes,
+                    "source_label": " ".join(arxiv_ids) or (pdf_paths[0].stem if pdf_paths else (args.topic or "")),
+                    "outputs": [p.name for p in outputs],
+                    "run_dir": str(run_dir),
+                    "out_dir": str(cfg.out_dir),
+                    "summary_excerpt": summary_excerpt,
+                }
+            )
+            print("\nOutput directory:", cfg.out_dir.resolve())
+            if outputs:
+                print("Generated:", ", ".join([p.name for p in outputs]))
+            else:
+                print("Generated: (no files)")
+            return 0
+
         outline, tex_path, pdf_path = pipeline.run()
 
         logger.info("Saved TeX: %s", tex_path)
         logger.info("Saved PDF: %s", pdf_path)
+
+        slide_titles = [s.title for s in outline.slides][:6]
+        summary_excerpt = "Slides: " + "; ".join(slide_titles)
+        outputs = []
+        if tex_path:
+            outputs.append(Path(tex_path).name)
+        if pdf_path:
+            outputs.append(Path(pdf_path).name)
+        append_journal(
+            {
+                "date": today_str(),
+                "time": time.strftime("%H:%M:%S"),
+                "modes": ["slides"] + (["teaching"] if args.teaching_mode else []),
+                "source_label": outline.arxiv_id,
+                "outputs": outputs,
+                "run_dir": str(run_dir),
+                "out_dir": str(cfg.out_dir),
+                "summary_excerpt": summary_excerpt,
+            }
+        )
 
         print("\nOutput directory:", cfg.out_dir.resolve())
         print("TeX exists:", tex_path.exists())

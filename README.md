@@ -19,6 +19,9 @@ It also support Topic-based, where you give a topic as an input, based on web se
 - Robust slide generation with retries and interactive fallbacks
 - Organized run directories with logs, outlines, and resume support
 - Topic based research using web search and slide deck generation using scholarly articles as references for the same.
+- New non-slide “chat” modes: reading notes, viva prep, experiment descriptions, exam prep, implementation notes
+- Teaching mode for slide pacing with pause questions
+- Persistent paper memory (local index + search) and daily research brief
 
 ## Requirements
 - Python 3.10+
@@ -171,6 +174,47 @@ paper2ppt \
   --query "Compare approaches" \
   --slides 12 \
   --bullets 4
+```
+
+## New Modes (Non-Slide + Teaching + Memory)
+Paper2ppt now includes several “chat-style” modes that generate structured markdown instead of slides, plus a teaching mode for slide pacing and a persistent paper memory.
+
+**Mode guides (with tutorials)**
+- Reading Mode: 1–2 page structured reading notes. See [docs/reading_mode.md](docs/reading_mode.md)
+- Viva Mode: defense-focused questions and failure cases. See [docs/viva_mode.md](docs/viva_mode.md)
+- Experiment Description Generator: datasets, baselines, metrics, protocol. See [docs/experiment_description.md](docs/experiment_description.md)
+- Exam Prep Generator: MCQs, short answers, derivations, trick questions. See [docs/exam_prep.md](docs/exam_prep.md)
+- Implementation Notes: components, training loop, losses, gotchas. See [docs/implementation_notes.md](docs/implementation_notes.md)
+- Teaching Mode (slides): intuition-heavy slides + pause questions. See [docs/teaching_mode.md](docs/teaching_mode.md)
+- Persistent Paper Memory: local index + search. See [docs/paper_memory.md](docs/paper_memory.md)
+- Daily Research Brief: journal-style summary of runs. See [docs/daily_brief.md](docs/daily_brief.md)
+
+**Quick examples**
+```bash
+# Reading notes (no slides)
+paper2ppt -a 2401.12345 --read
+
+# Viva prep (no slides)
+paper2ppt -a 2401.12345 --viva-mode
+
+# Experiment description (no slides)
+paper2ppt -a 2401.12345 --describe-experiments
+
+# Exam prep (no slides)
+paper2ppt -a 2401.12345 --exam-prep
+
+# Implementation notes (no slides)
+paper2ppt -a 2401.12345 --implementation-notes
+
+# Teaching mode (slides)
+paper2ppt -a 2401.12345 --teaching-mode -s 12 -b 4
+
+# Index + search
+paper2ppt --index-paper -a 2401.12345
+paper2ppt --search "keyframe selection efficiency"
+
+# Daily research brief
+paper2ppt --daily-brief
 ```
 
 ## Streamlit GUI
@@ -395,8 +439,8 @@ Notes on structure:
 - `-p`, `--pdf` path to a local PDF (repeatable or comma-separated list)
 - `-d`, `--pdf-dir` directory containing PDFs (repeatable)
 - `-u`, `--pdf-url` direct PDF URL (repeatable or comma-separated list)
-- `-s`, `--slides` number of slides (required)
-- `-b`, `--bullets` bullets per slide (required)
+- `-s`, `--slides` number of slides (default `12`)
+- `-b`, `--bullets` bullets per slide (default `4`)
 - `-q`, `--query` user query to guide the presentation theme (enables web search by default)
 - `-n`, `--name` custom run name for the output directory
 - `-ws`, `--no-web-search` disable web search even if `--query` is provided
@@ -434,6 +478,15 @@ Notes on structure:
 - `-uf`, `--use-figures` enable figure selection and insertion (single arXiv source only)
 - `-wsn`, `--with-speaker-notes` generate speaker notes for each slide
 - `-v`, `--verbose` verbose logs
+- `--read` generate reading notes (no slides)
+- `--viva-mode` generate viva prep notes (no slides)
+- `--describe-experiments` generate experiment description (no slides)
+- `--exam-prep` generate exam prep materials (no slides)
+- `--implementation-notes` generate implementation notes (no slides)
+- `--teaching-mode` teaching-optimized slides with pause questions
+- `--index-paper` index a paper into local memory
+- `--search` search the local paper index
+- `--daily-brief` generate a daily research brief
 - `--version` show version and exit
 
 ## Use Cases
@@ -512,6 +565,15 @@ Paper2ppt/
   gui_streamlit.py
   tex_utils.py
   web_utils.py
+  docs/
+    reading_mode.md
+    viva_mode.md
+    experiment_description.md
+    exam_prep.md
+    implementation_notes.md
+    teaching_mode.md
+    paper_memory.md
+    daily_brief.md
   requirements.txt
   pyproject.toml
   README.md
