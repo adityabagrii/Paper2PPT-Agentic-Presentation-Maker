@@ -7,3 +7,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+debug_image_outputs/
+image_sanity_outputs/
+api_flowchart_outputs/
+flowchart_test_outputs/
+flow_chart_checking/
+sample_flowchart_testing.py
+image_gen_utils.py

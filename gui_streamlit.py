@@ -208,21 +208,16 @@ def main() -> None:
         bullets = st.number_input("Bullets per slide", min_value=1, max_value=10, value=4, step=1)
         query = st.text_input("User query")
         use_figures = st.checkbox("Use figures (single arXiv only)")
-        generate_images = st.checkbox("Generate diagrams/images")
-        image_provider = st.selectbox("Image provider", options=["nvidia", "openai"], index=0)
-        image_model = st.text_input(
-            "Image model",
-            value="black-forest-labs/flux.1-kontext-dev" if image_provider == "nvidia" else "gpt-image-1.5",
-        )
-        max_images = st.number_input("Max generated images", min_value=0, max_value=20, value=6, step=1)
-        image_size = st.text_input("Image size/aspect", value="1:1")
-        image_quality = st.selectbox("Image quality", options=["low", "medium", "high"], index=1)
+        generate_flowcharts = st.checkbox("Generate flowcharts (Graphviz)")
+        min_flowcharts = st.number_input("Min flowcharts", min_value=0, max_value=10, value=3, step=1)
+        max_flowcharts = st.number_input("Max flowcharts", min_value=0, max_value=10, value=4, step=1)
         with_notes = st.checkbox("Include speaker notes")
         skip_sanity = st.checkbox("Skip LLM sanity check")
         approve = st.checkbox("Require outline approval", value=True)
         retry_slides = st.number_input("Retry slides", min_value=1, max_value=6, value=3, step=1)
         web_search = st.checkbox("Enable web search", value=True)
         model = st.text_input("NVIDIA model", value="nvidia/llama-3.1-nemotron-ultra-253b-v1")
+        max_llm_workers = st.number_input("Max LLM workers", min_value=1, max_value=16, value=4, step=1)
 
         default_root = st.session_state["gui_config"].get(
             "root_dir", str(Path.home() / "paper2ppt_runs")
@@ -282,17 +277,12 @@ def main() -> None:
             interactive=False,
             check_interval=5,
             resume_path=None,
-            generate_images=generate_images,
-            image_provider=image_provider,
-            image_model=image_model,
-            max_generated_images=int(max_images),
-            image_size=image_size,
-            image_quality=image_quality,
-            image_api_key=(
-                os.environ.get("NVIDIA_API_KEY", "")
-                if image_provider == "nvidia"
-                else os.environ.get("OPENAI_API_KEY", "")
-            ),
+            generate_flowcharts=generate_flowcharts,
+            min_flowcharts=int(min_flowcharts),
+            max_flowcharts=int(max_flowcharts),
+            flowchart_structure="linear",
+            flowchart_depth=8,
+            max_llm_workers=int(max_llm_workers),
         )
 
         cfg.out_dir.mkdir(parents=True, exist_ok=True)

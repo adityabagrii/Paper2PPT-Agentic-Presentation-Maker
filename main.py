@@ -1,4 +1,4 @@
-"""CLI entrypoint for running the Paper2ppt pipeline from the terminal ."""
+"""CLI entrypoint for running the Paper2ppt pipeline from the terminal lists all the arguments that can be passed to the framework for the slide deck generation."""
 from __future__ import annotations
 
 import argparse
@@ -25,7 +25,7 @@ except Exception:
     from pipeline import Pipeline, RunConfig
 
 logger = logging.getLogger("paper2ppt")
-VERSION = "0.7.1"
+VERSION = "0.6.4"
 
 
 def _requirements_path() -> Path | None:
@@ -91,7 +91,7 @@ def print_helper() -> None:
     print("  --skip-llm-sanity      Skip LLM sanity check")
     print("  --no-approve           Skip outline approval loop")
     print("  --interactive          Prompt at checkpoints to allow aborting")
-    print("  --generate-images      Generate diagrams/images from figure ideas")
+    print("  --generate-flowcharts  Generate Graphviz flowcharts for key slides")
     print("")
     print("Full options:")
     print("  paper2ppt --help")
@@ -139,26 +139,12 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="How often (in steps) to prompt during interactive runs",
     )
-    p.add_argument("--generate-images", "-gi", action="store_true", help="Generate diagrams/images from figure ideas")
-    p.add_argument("--image-provider", default="nvidia", help="Image generation provider (default: nvidia)")
-    p.add_argument(
-        "--image-model",
-        default="black-forest-labs/flux.1-kontext-dev",
-        help="Image generation model name",
-    )
-    p.add_argument("--max-generated-images", type=int, default=6, help="Max generated images per run")
-    p.add_argument("--image-size", default="1:1", help="Image size or aspect ratio (e.g., 1:1 or 1024x1024)")
-    p.add_argument("--image-quality", default="medium", help="Image quality: low, medium, high")
+    p.add_argument("--max-llm-workers", "-workers", type=int, default=4, help="Max parallel LLM calls")
+    p.add_argument("--generate-flowcharts", "-gf", action="store_true", help="Generate Graphviz flowcharts")
+    p.add_argument("--generate-images", "-gi", action="store_true", help="Alias for --generate-flowcharts")
+    p.add_argument("--min-flowcharts", "-minf", type=int, default=3, help="Min flowcharts per deck")
+    p.add_argument("--max-flowcharts", "-maxf", type=int, default=4, help="Max flowcharts per deck")
     p.add_argument("--resume", "-r", default="", help="Resume from a previous run directory or outputs directory")
-    p.add_argument("--titles-only", action="store_true", help="Stop after slide titles (skip slide generation)")
-    p.add_argument("--topic", default="", help="Topic-only mode: research and generate from a topic")
-    p.add_argument("--max-web-results", type=int, default=6, help="Max web results to consider in topic mode")
-    p.add_argument("--max-web-pdfs", type=int, default=4, help="Max PDFs to download in topic mode")
-    p.add_argument(
-        "--topic-scholarly-only",
-        action="store_true",
-        help="Restrict topic mode to scholarly sources (arXiv/CVPR/ICML/NeurIPS/Scholar)",
-    )
     p.add_argument(
         "--root-dir",
         default=None,
@@ -321,22 +307,12 @@ def main() -> int:
         interactive=args.interactive,
         check_interval=max(1, args.check_interval),
         resume_path=Path(args.resume).expanduser().resolve() if args.resume else None,
-        generate_images=args.generate_images,
-        image_provider=args.image_provider,
-        image_model=args.image_model,
-        max_generated_images=max(0, args.max_generated_images),
-        image_size=args.image_size,
-        image_quality=args.image_quality,
-        image_api_key=(
-            os.environ.get("NVIDIA_API_KEY", "")
-            if args.image_provider.lower() in {"nvidia", "nim"}
-            else os.environ.get("OPENAI_API_KEY", "")
-        ),
-        titles_only=args.titles_only,
-        topic=args.topic.strip(),
-        max_web_results=max(1, args.max_web_results),
-        max_web_pdfs=max(0, args.max_web_pdfs),
-        topic_scholarly_only=args.topic_scholarly_only,
+        generate_flowcharts=bool(args.generate_flowcharts or args.generate_images),
+        min_flowcharts=max(0, args.min_flowcharts),
+        max_flowcharts=max(0, args.max_flowcharts),
+        flowchart_structure="linear",
+        flowchart_depth=8,
+        max_llm_workers=max(1, args.max_llm_workers),
     )
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -349,10 +325,6 @@ def main() -> int:
         llm = init_llm(LLMConfig(model=cfg.llm_model, api_key=cfg.llm_api_key))
 
         pipeline = Pipeline(cfg, llm)
-        if cfg.topic and not (cfg.arxiv_ids or cfg.pdf_paths):
-            pipeline.prepare_topic_sources()
-            if cfg.topic:
-                (cfg.out_dir / "topic.txt").write_text(cfg.topic + "\n", encoding="utf-8")
         outline, tex_path, pdf_path = pipeline.run()
 
         logger.info("Saved TeX: %s", tex_path)
@@ -370,3 +342,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+"""
+Example Run Command:
+paper2ppt -a "1811.12432, 2404.04346, 2510.13891, 2503.13139, 2502.21271"\
+    -u https://openaccess.thecvf.com/content/CVPR2025/papers/Buch_Flexible_Frame_Selection_for_Efficient_Video_Reasoning_CVPR_2025_paper.pdf\
+    -s 15 -b 4 -q "Compare these key frame detection algorithms list their similarities and differences among each other and based on the results from the papers talk about the most efficient approach"\
+    -rs 2 -msc 40 -llms -uf -wsn -n "KeyFrameComparisionWithImages" -gi
+"""

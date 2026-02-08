@@ -11,16 +11,16 @@ Agentic CLI that turns arXiv papers and/or local PDFs into Beamer slide decks us
 - arXiv, local PDF, and PDF URL inputs (single or multiple)
 - Query-guided decks that answer a user question (not just summaries)
 - Optional web search with citations
-- Speaker notes and figure suggestions
+- Speaker notes, figure suggestions, and flowchart diagrams
 - Robust slide generation with retries and interactive fallbacks
 - Organized run directories with logs, outlines, and resume support
 
 ## Requirements
 - Python 3.10+
-- NVIDIA NIM API key
+- NVIDIA NIM API key (LLM + flowcharts)
 - `pymupdf` for local PDF parsing
 - `pdflatex` for PDF output (optional but recommended)
-- Optional: `NVIDIA_API_KEY` for diagram/image generation (default)
+- Graphviz (`dot`) for flowchart rendering
 
 ## Installation
 From the repository root:
@@ -91,6 +91,19 @@ Option 1 (recommended, MiKTeX):
 Option 2 (full distribution, TeX Live):
 1. Install TeX Live.
 2. Add the TeX Live `bin` directory to PATH.
+
+## Install Graphviz (Flowcharts)
+Graphviz is required to render flowcharts into PNGs.
+
+### macOS
+```bash
+brew install graphviz
+```
+
+### Windows
+1. Download and install Graphviz from the official site.
+2. Ensure `dot` is on your PATH.
+3. Verify with: `dot -V`
 
 ## Quick Start
 Basic arXiv run:
@@ -163,20 +176,29 @@ streamlit run gui_streamlit.py
 ```
 The GUI supports arXiv IDs, local PDFs, PDF directories, PDF URLs, and file uploads.
 You can save a default root directory from the sidebar for future runs.
-For image generation, set `NVIDIA_API_KEY` in your environment (default provider).
+For flowchart generation, set `NVIDIA_API_KEY` in your environment.
 
-## Diagram/Image Generation
-Paper2ppt can generate diagrams or illustrative images from the slide outline's figure ideas.
-Default provider uses NVIDIA's `black-forest-labs/flux.1-kontext-dev`.
+## Flowchart & Diagram Generation (Graphviz)
+Paper2ppt can generate **Graphviz flowcharts** for key slides to deepen understanding of methods and system internals.
+The LLM decides the flowchart **structure** (linear/branch/cycle) and **step count** per slide.
+By default it targets 3–4 flowcharts in a 10‑slide deck (configurable via CLI).
+
 To enable:
 ```bash
-paper2ppt -a 1811.12432 --slides 10 --bullets 4 --generate-images --max-generated-images 6
+paper2ppt -a 1811.12432 --slides 10 --bullets 4 --generate-flowcharts
 ```
-Images are saved to `outputs/generated_images/` and included in slides automatically.
+Flowcharts are saved to `outputs/flowcharts/` and included in slides automatically.
 Set your NVIDIA key:
 ```bash
 export NVIDIA_API_KEY="YOUR_KEY_HERE"
 ```
+
+The LLM also proposes **other diagram types** (Graphviz-friendly) per slide, such as:
+- Dependency graphs / DAGs
+- Hierarchy / taxonomy diagrams
+- Decision trees
+- Module interaction graphs
+- Ablation/result relationship graphs
 
 ## Topic-Only Research Mode
 You can start from a topic instead of providing sources. Paper2ppt will:
@@ -187,7 +209,7 @@ You can start from a topic instead of providing sources. Paper2ppt will:
 
 Example:
 ```bash
-paper2ppt --topic "Key frame selection in long video understanding" --slides 15 --bullets 4 --generate-images
+paper2ppt --topic "Key frame selection in long video understanding" --slides 15 --bullets 4 --generate-flowcharts
 ```
 
 ### Topic-Only Workflow (Visual)
@@ -218,7 +240,7 @@ Generate slide titles (LLM)
 Generate slides (LLM)
   |
   v
-Optional diagram/image generation from figure ideas
+Optional flowchart/diagram generation (Graphviz)
   |
   v
 Render Beamer LaTeX -> Compile PDF
@@ -263,6 +285,7 @@ Example output structure:
     arxiv_1811.12432/...
     pdf_<name>/pdf_images/...
   outputs/
+    flowcharts/
     Adaptive_Frame_Interpolation_for_Fast_Video_Processing.tex
     Adaptive_Frame_Interpolation_for_Fast_Video_Processing.pdf
     run.log
@@ -321,12 +344,11 @@ Notes on structure:
 - `--max-web-results` max web results to consider in topic mode (default `6`)
 - `--max-web-pdfs` max PDFs to download in topic mode (default `4`)
 - `--topic-scholarly-only` restrict topic mode to scholarly sources (arXiv/CVPR/ICML/NeurIPS/Scholar)
-- `-gi`, `--generate-images` generate diagrams/images from figure ideas
-- `--image-provider` image generation provider (default `nvidia`)
-- `--image-model` image generation model name (default `black-forest-labs/flux.1-kontext-dev`)
-- `--max-generated-images` max generated images per run (default `6`)
-- `--image-size` image size (default `1024x1024`)
-- `--image-quality` image quality (low/medium/high)
+- `-gf`, `--generate-flowcharts` generate Graphviz flowcharts for key slides
+- `-gi`, `--generate-images` alias for `--generate-flowcharts`
+- `--min-flowcharts` minimum flowcharts per deck (default `3`)
+- `--max-flowcharts` maximum flowcharts per deck (default `4`)
+- `--max-llm-workers` max parallel LLM calls (default `4`)
 - `--root-dir` root directory for all runs (default `$PAPER2PPT_ROOT_DIR` or `~/paper2ppt_runs`)
 - `-wdir`, `--work-dir` working directory (overrides `--root-dir`)
 - `-odir`, `--out-dir` output directory (overrides `--root-dir`)
@@ -393,7 +415,7 @@ Generate slides (LLM)
 Optional approval loop (user feedback -> LLM updates)
   |
   v
-Optional figures (single arXiv only)
+Optional flowcharts (Graphviz)
   |
   v
 Render Beamer LaTeX

@@ -123,10 +123,14 @@ def beamer_from_outline(outline: DeckOutline) -> str:
             figs = "\\vspace{0.4em}\n{\\footnotesize\\textit{Figure ideas:} " + _esc("; ".join(sl.figure_suggestions)) + "}"
 
         gen_imgs = ""
+        img_lines = []
+        if getattr(sl, "flowchart_images", None):
+            for p in sl.flowchart_images:
+                img_lines.append(f"\\includegraphics[width=0.9\\linewidth]{{{_esc(p)}}}")
         if getattr(sl, "generated_images", None):
-            img_lines = []
             for p in sl.generated_images:
                 img_lines.append(f"\\includegraphics[width=0.9\\linewidth]{{{_esc(p)}}}")
+        if img_lines:
             gen_imgs = "\\vspace{0.6em}\n" + "\\\\\n".join(img_lines)
 
         notes = ""
@@ -221,10 +225,14 @@ def beamer_from_outline_with_figs(outline: DeckOutline, fig_plan: dict) -> str:
     for idx, sl in enumerate(outline.slides, 1):
         bullets = "\n".join([f"\\item {_esc(b)}" for b in sl.bullets])
         gen_imgs = ""
+        img_lines = []
+        if getattr(sl, "flowchart_images", None):
+            for p in sl.flowchart_images:
+                img_lines.append(f"\\includegraphics[width=0.9\\linewidth]{{{_esc(p)}}}")
         if getattr(sl, "generated_images", None):
-            img_lines = []
             for p in sl.generated_images:
                 img_lines.append(f"\\includegraphics[width=0.9\\linewidth]{{{_esc(p)}}}")
+        if img_lines:
             gen_imgs = "\\vspace{0.6em}\n" + "\\\\\n".join(img_lines)
 
         slides_tex.append(
