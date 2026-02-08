@@ -125,6 +125,27 @@ def _collect_pdfs(paths: list[str], dirs: list[str]) -> list[Path]:
     return pdfs
 
 
+def _collect_markdowns(paths: list[str], dirs: list[str]) -> list[Path]:
+    """Collect markdown files.
+    
+    Args:
+        paths (list[str]):
+        dirs (list[str]):
+    
+    Returns:
+        list[Path]:
+    """
+    mds: list[Path] = []
+    for p in _split_list_args(paths):
+        mds.append(Path(p).expanduser().resolve())
+    for d in _split_list_args(dirs):
+        dpath = Path(d).expanduser().resolve()
+        if dpath.exists() and dpath.is_dir():
+            mds.extend(sorted(dpath.glob("*.md")))
+            mds.extend(sorted(dpath.glob("*.markdown")))
+    return mds
+
+
 def _download_pdfs(urls: list[str], out_dir: Path) -> list[Path]:
     """Download pdfs.
     
@@ -183,7 +204,15 @@ def _save_uploads(files, out_dir: Path) -> list[Path]:
     return saved
 
 
-def _resolve_sources(arxiv_text: str, pdf_text: str, pdf_dir_text: str, pdf_url_text: str, uploads: list[Path]) -> tuple[list[str], list[Path]]:
+def _resolve_sources(
+    arxiv_text: str,
+    pdf_text: str,
+    pdf_dir_text: str,
+    pdf_url_text: str,
+    md_text: str,
+    md_dir_text: str,
+    uploads: list[Path],
+) -> tuple[list[str], list[Path], list[Path]]:
     """Resolve sources.
     
     Args:
@@ -191,17 +220,24 @@ def _resolve_sources(arxiv_text: str, pdf_text: str, pdf_dir_text: str, pdf_url_
         pdf_text (str):
         pdf_dir_text (str):
         pdf_url_text (str):
+        md_text (str):
+        md_dir_text (str):
         uploads (list[Path]):
     
     Returns:
-        tuple[list[str], list[Path]]:
+        tuple[list[str], list[Path], list[Path]]:
     """
     arxiv_inputs = _split_list_args([arxiv_text]) if arxiv_text else []
     arxiv_ids = sorted({extract_arxiv_id(a) for a in arxiv_inputs if a})
 
     pdf_paths = _collect_pdfs([pdf_text] if pdf_text else [], [pdf_dir_text] if pdf_dir_text else [])
+    md_paths = _collect_markdowns([md_text] if md_text else [], [md_dir_text] if md_dir_text else [])
     if uploads:
-        pdf_paths.extend(uploads)
+        for p in uploads:
+            if p.suffix.lower() in {".md", ".markdown"}:
+                md_paths.append(p)
+            else:
+                pdf_paths.append(p)
 
     if pdf_url_text:
         downloads = _download_pdfs([pdf_url_text], Path(st.session_state["work_dir"]) / "downloads")
@@ -214,7 +250,16 @@ def _resolve_sources(arxiv_text: str, pdf_text: str, pdf_dir_text: str, pdf_url_
         except Exception:
             key = str(p)
         deduped[key] = p
-    return arxiv_ids, list(deduped.values())
+    pdf_paths = list(deduped.values())
+
+    deduped_md: dict[str, Path] = {}
+    for p in md_paths:
+        try:
+            key = str(p.resolve())
+        except Exception:
+            key = str(p)
+        deduped_md[key] = p
+    return arxiv_ids, pdf_paths, list(deduped_md.values())
 
 
 def _load_gui_config() -> dict:
@@ -243,12 +288,13 @@ def _save_gui_config(data: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
-def _derive_run_name(arxiv_ids: list[str], pdf_paths: list[Path], query: str) -> str:
+def _derive_run_name(arxiv_ids: list[str], pdf_paths: list[Path], md_paths: list[Path], query: str) -> str:
     """Function derive run name.
     
     Args:
         arxiv_ids (list[str]):
         pdf_paths (list[Path]):
+        md_paths (list[Path]):
         query (str):
     
     Returns:
@@ -263,12 +309,14 @@ def _derive_run_name(arxiv_ids: list[str], pdf_paths: list[Path], query: str) ->
             title = arxiv_ids[0]
     elif pdf_paths:
         title = pdf_paths[0].stem
+    elif md_paths:
+        title = md_paths[0].stem
     else:
         title = "paper"
 
     run_name = _slugify(title)
     if query:
-        if len(arxiv_ids) + len(pdf_paths) > 1:
+        if len(arxiv_ids) + len(pdf_paths) + len(md_paths) > 1:
             run_name = f"Q-{_query_summary(query)}-MultiSource"
         else:
             run_name = f"Q-{_query_summary(query)}-{run_name}"
@@ -283,7 +331,7 @@ def main() -> None:
     """
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
-    st.caption("Create Beamer presentations and reading artifacts from arXiv papers and local PDFs.")
+    st.caption("Create Beamer presentations and reading artifacts from arXiv papers, local PDFs, and Markdown.")
 
     if "uploads" not in st.session_state:
         st.session_state["uploads"] = []
@@ -298,15 +346,17 @@ def main() -> None:
         pdf_text = st.text_input("PDF paths (comma-separated)")
         pdf_dir_text = st.text_input("PDF directory")
         pdf_url_text = st.text_input("PDF URL(s) (comma-separated)")
-        uploaded = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True)
+        md_text = st.text_input("Markdown paths (comma-separated)")
+        md_dir_text = st.text_input("Markdown directory")
+        uploaded = st.file_uploader("Upload PDFs/Markdown", type=["pdf", "md", "markdown"], accept_multiple_files=True)
         if uploaded:
             saved = _save_uploads(uploaded, Path(st.session_state["work_dir"]) / "uploads")
             st.session_state["uploads"].extend(saved)
         if st.session_state["uploads"]:
-            st.write("Uploaded PDFs:")
+            st.write("Uploaded files:")
             for idx, p in enumerate(st.session_state["uploads"], 1):
                 st.write(f"{idx}. {p.name}")
-            if st.button("Clear uploaded PDFs"):
+            if st.button("Clear uploaded files"):
                 st.session_state["uploads"] = []
 
         st.header("Run Settings")
@@ -348,6 +398,7 @@ def main() -> None:
         model = st.text_input("NVIDIA model", value="nvidia/llama-3.1-nemotron-ultra-253b-v1")
         max_llm_workers = st.number_input("Max LLM workers", min_value=1, max_value=16, value=4, step=1)
         cache_summary = st.checkbox("Cache summaries (3h TTL)")
+        figures_only = st.checkbox("Figures only (no slides)")
         resume_path = st.text_input("Resume path (optional)")
         search_query = st.text_input("Index search query", value="") if mode == "Search Index" else ""
         chat_question = st.text_input("Chat question", value="") if mode == "Chat" else ""
@@ -363,18 +414,29 @@ def main() -> None:
         work_override = st.text_input("Work directory (optional)")
         out_override = st.text_input("Output directory (optional)")
 
-    arxiv_ids, pdf_paths = _resolve_sources(arxiv_text, pdf_text, pdf_dir_text, pdf_url_text, st.session_state["uploads"])
+    arxiv_ids, pdf_paths, md_paths = _resolve_sources(
+        arxiv_text,
+        pdf_text,
+        pdf_dir_text,
+        pdf_url_text,
+        md_text,
+        md_dir_text,
+        st.session_state["uploads"],
+    )
     st.subheader("Sources")
-    if not arxiv_ids and not pdf_paths:
-        st.info("Add at least one arXiv ID/URL or PDF.")
+    if not arxiv_ids and not pdf_paths and not md_paths:
+        st.info("Add at least one arXiv ID/URL, PDF, or Markdown file.")
     if arxiv_ids:
         st.write("arXiv IDs:")
         st.write(arxiv_ids)
     if pdf_paths:
         st.write("PDFs:")
         st.write([str(p) for p in pdf_paths])
+    if md_paths:
+        st.write("Markdown:")
+        st.write([str(p) for p in md_paths])
 
-    run_name = _derive_run_name(arxiv_ids, pdf_paths, query)
+    run_name = _derive_run_name(arxiv_ids, pdf_paths, md_paths, query)
     run_root = Path(root_dir).expanduser().resolve()
     run_dir = run_root / run_name
     work_dir = Path(work_override).expanduser().resolve() if work_override else (run_dir / "work")
@@ -384,13 +446,14 @@ def main() -> None:
     st.write(f"Run directory: {run_dir}")
 
     if st.button("Run ResearchOS"):
-        if mode not in {"Daily Brief", "Search Index"} and not arxiv_ids and not pdf_paths:
+        if mode not in {"Daily Brief", "Search Index"} and not arxiv_ids and not pdf_paths and not md_paths:
             st.error("Provide at least one source to continue.")
             return
 
         cfg = RunConfig(
             arxiv_ids=arxiv_ids,
             pdf_paths=pdf_paths,
+            md_paths=md_paths,
             work_dir=work_dir,
             out_dir=out_dir,
             slide_count=int(slides),
@@ -442,6 +505,7 @@ def main() -> None:
             daily_brief=(mode == "Daily Brief"),
             cache_summary=cache_summary,
             chat_mode=(mode == "Chat"),
+            figures_only=figures_only,
         )
 
         cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -515,7 +579,10 @@ Question: {chat_question}
                         answer = safe_invoke(logging.getLogger("researchos"), llm, prompt, retries=6).strip()
                         result["chat_answer"] = answer
                 else:
-                    if mode == "Slides":
+                    if figures_only:
+                        outputs = pipeline.generate_figures_only()
+                        result["outputs"] = outputs
+                    elif mode == "Slides":
                         outline, tex_path, pdf_path = pipeline.run()
                         result["outline"] = outline
                         result["tex_path"] = tex_path

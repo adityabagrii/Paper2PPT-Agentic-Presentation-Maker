@@ -6,6 +6,9 @@ Store and search lightweight paper summaries locally.
 ```bash
 researchos --index-paper -a 2401.12345
 ```
+## Workflow
+![Workflow](../images/paper_memory_workflow.png)
+
 
 **Search the index**
 ```bash

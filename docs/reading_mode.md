@@ -6,6 +6,9 @@ Use this when you want understanding, not slides. It generates 1–2 pages of st
 ```bash
 researchos -a 2401.12345 --read
 ```
+## Workflow
+![Workflow](../images/reading_mode_workflow.png)
+
 
 **With diagrams embedded**
 ```bash

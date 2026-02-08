@@ -6,6 +6,9 @@ Use this for targeted exam prep material from a paper.
 ```bash
 researchos -a 2401.12345 --exam-prep
 ```
+## Workflow
+![Workflow](../images/exam_prep_workflow.png)
+
 
 **Output**
 - `outputs/exam_prep.md`

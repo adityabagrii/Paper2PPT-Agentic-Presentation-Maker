@@ -6,6 +6,9 @@ Chat with the model about a paper using stored context and semantic retrieval.
 ```bash
 researchos -a 2401.12345 --chat
 ```
+## Workflow
+![Workflow](../images/chat_mode_workflow.png)
+
 
 **What it does**
 - Builds and stores `outputs/paper_context.json` (summary + chunks + embeddings)

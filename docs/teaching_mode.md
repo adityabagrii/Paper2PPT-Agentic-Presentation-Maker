@@ -6,6 +6,9 @@ Teaching mode generates slides optimized for pacing and understanding.
 ```bash
 researchos -a 2401.12345 --teaching-mode -s 12 -b 4
 ```
+## Workflow
+![Workflow](../images/teaching_mode_workflow.png)
+
 
 **Behavior**
 - More intuition

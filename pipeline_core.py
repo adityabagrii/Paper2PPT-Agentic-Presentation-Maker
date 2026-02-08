@@ -97,11 +97,14 @@ class Pipeline:
         if self.cfg.bullets_per_slide < 1:
             raise ValueError("bullets_per_slide must be >= 1")
         if not self.cfg.resume_path:
-            if not self.cfg.arxiv_ids and not self.cfg.pdf_paths and not self.cfg.topic:
-                raise ValueError("Provide arXiv/PDF sources or use --topic")
+            if not self.cfg.arxiv_ids and not self.cfg.pdf_paths and not self.cfg.md_paths and not self.cfg.topic:
+                raise ValueError("Provide arXiv/PDF/Markdown sources or use --topic")
         for p in self.cfg.pdf_paths:
             if not p.exists():
                 raise FileNotFoundError(f"PDF not found: {p}")
+        for p in self.cfg.md_paths:
+            if not p.exists():
+                raise FileNotFoundError(f"Markdown not found: {p}")
 
         self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -1212,26 +1215,68 @@ Slide titles: {[s.title for s in outline.slides]}
                     if item:
                         sources.append(item)
 
+        if self.cfg.md_paths:
+            def _load_md(md_path: Path) -> dict:
+                logger.info("Reading markdown file: %s", md_path)
+                try:
+                    text = md_path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    text = md_path.read_text(encoding="utf-8", errors="replace")
+                title = md_path.stem
+                for line in text.splitlines():
+                    if line.strip().startswith("#"):
+                        title = line.lstrip("#").strip() or title
+                        break
+                paper_text = text.strip()
+                logger.info("Markdown text chars: %s", len(paper_text))
+                if len(paper_text) <= 200:
+                    raise RuntimeError("Markdown text too small.")
+
+                return {
+                    "type": "markdown",
+                    "id": str(md_path),
+                    "title": title,
+                    "abstract": "",
+                    "url": str(md_path),
+                    "text": paper_text,
+                    "images": [],
+                }
+
+            max_workers = min(2, self.cfg.max_llm_workers, len(self.cfg.md_paths))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_load_md, p): p for p in self.cfg.md_paths}
+                for fut in as_completed(futures):
+                    item = fut.result()
+                    if item:
+                        sources.append(item)
+
         if not sources:
-            raise RuntimeError("No sources collected. Provide arXiv/PDF sources or use --topic.")
+            raise RuntimeError("No sources collected. Provide arXiv/PDF/Markdown sources or use --topic.")
 
         if len(sources) == 1:
             meta = {"title": sources[0]["title"], "abstract": sources[0].get("abstract", "")}
         else:
             meta = {"title": "Multiple Sources", "abstract": "Multiple documents provided."}
 
-        if self.cfg.arxiv_ids and not self.cfg.pdf_paths and len(self.cfg.arxiv_ids) == 1:
+        if self.cfg.arxiv_ids and not self.cfg.pdf_paths and not self.cfg.md_paths and len(self.cfg.arxiv_ids) == 1:
             source_label = f"arXiv:{self.cfg.arxiv_ids[0]}"
-        elif self.cfg.arxiv_ids and not self.cfg.pdf_paths:
+        elif self.cfg.arxiv_ids and not self.cfg.pdf_paths and not self.cfg.md_paths:
             source_label = f"arXiv ({len(self.cfg.arxiv_ids)})"
-        elif self.cfg.pdf_paths and not self.cfg.arxiv_ids:
+        elif self.cfg.pdf_paths and not self.cfg.arxiv_ids and not self.cfg.md_paths:
             source_label = f"Local PDFs ({len(self.cfg.pdf_paths)})"
+        elif self.cfg.md_paths and not self.cfg.arxiv_ids and not self.cfg.pdf_paths:
+            source_label = f"Markdown files ({len(self.cfg.md_paths)})"
         else:
             source_label = f"Mixed sources ({len(sources)})"
 
         sources_block_lines = []
         for i, s in enumerate(sources, 1):
-            src_tag = "arXiv" if s["type"] == "arxiv" else "PDF"
+            if s["type"] == "arxiv":
+                src_tag = "arXiv"
+            elif s["type"] == "markdown":
+                src_tag = "Markdown"
+            else:
+                src_tag = "PDF"
             sources_block_lines.append(f"{i}. [{src_tag}] {s['title']} ({s['id']})")
         sources_block = "\n".join(sources_block_lines)
 
@@ -2109,7 +2154,7 @@ Question: {q}
 
         if self.cfg.use_figures:
             # For topic/multi-source runs, attach figures via LLM+captions instead of strict single-arXiv flow.
-            if self.cfg.pdf_paths or len(self.cfg.arxiv_ids) != 1:
+            if self.cfg.pdf_paths or self.cfg.md_paths or len(self.cfg.arxiv_ids) != 1:
                 try:
                     self._attach_figures_from_arxiv_sources(outline)
                 except Exception:
@@ -2128,3 +2173,42 @@ Question: {q}
             tex_path, pdf_path = self.renderer.render(outline, self.cfg.out_dir)
 
         return outline, tex_path, pdf_path
+
+    def generate_figures_only(self) -> List[Path]:
+        """Generate diagrams only (no slides)."""
+        self.sanity_checks()
+        self.prepare_topic_sources()
+        ctx = self.build_paper_context()
+
+        if not self.cfg.generate_flowcharts:
+            logger.info("Figures-only requested; enabling diagram generation.")
+
+        diagrams: List[dict] = []
+        try:
+            diagrams = self.generate_reading_diagrams(ctx)
+        except Exception:
+            logger.exception("Figure generation failed.")
+            return []
+
+        outputs: List[Path] = []
+        for d in diagrams:
+            rel = d.get("png", "")
+            if not rel:
+                continue
+            outputs.append(self.cfg.out_dir / rel)
+
+        if diagrams:
+            lines = ["# Figures", ""]
+            for d in diagrams:
+                rel = d.get("png", "")
+                cap = d.get("caption", "")
+                if not rel:
+                    continue
+                lines.append(f"![{cap}]({rel})")
+                if cap:
+                    lines.append(f"_Caption: {cap}_")
+                lines.append("")
+            fig_md = self._write_markdown("figures_only.md", "\n".join(lines).strip())
+            outputs.append(fig_md)
+
+        return outputs

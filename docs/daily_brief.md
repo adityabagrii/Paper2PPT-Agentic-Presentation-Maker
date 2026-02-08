@@ -6,6 +6,9 @@ Summarizes your ResearchOS activity for the day into a brief research journal.
 ```bash
 researchos --daily-brief
 ```
+## Workflow
+![Workflow](../images/daily_brief_workflow.png)
+
 
 **Output**
 - `outputs/daily_brief_YYYY-MM-DD.md`

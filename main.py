@@ -104,6 +104,7 @@ def print_helper() -> None:
     print('  researchos --arxiv "https://arxiv.org/abs/2602.05883" --slides 10 --bullets 4')
     print('  researchos --pdf "/path/to/paper.pdf" --slides 10 --bullets 4')
     print('  researchos --pdf-url "https://example.com/paper.pdf" --slides 10 --bullets 4')
+    print('  researchos --md "/path/to/notes.md" --slides 10 --bullets 4')
     print('  researchos --arxiv 1811.12432 --query "Compare this to prior work" --slides 10 --bullets 4')
     print('  researchos --arxiv "1811.12432,1707.06347" --slides 10 --bullets 4')
     print('  researchos --pdf-dir "/path/to/pdfs" --query "Compare methods" --slides 10 --bullets 4')
@@ -117,6 +118,8 @@ def print_helper() -> None:
     print("  -p, --pdf LIST         One or more local PDF paths")
     print("  -d, --pdf-dir PATH     Directory of PDFs")
     print("  -u, --pdf-url LIST     One or more direct PDF URLs")
+    print("  --md LIST              One or more local Markdown paths")
+    print("  --md-dir PATH          Directory of Markdown files")
     print("  --root-dir PATH        Override root runs directory")
     print("  --work-dir PATH        Override working directory")
     print("  --out-dir PATH         Override output directory")
@@ -128,6 +131,7 @@ def print_helper() -> None:
     print("  --no-approve           Skip outline approval loop")
     print("  --interactive          Prompt at checkpoints to allow aborting")
     print("  --generate-flowcharts  Generate Graphviz flowcharts for key slides")
+    print("  --figures-only         Generate diagrams only (no slides)")
     print("")
     print("Full options:")
     print("  researchos --help")
@@ -139,7 +143,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         argparse.Namespace:
     """
-    p = argparse.ArgumentParser(description="Generate a Beamer slide deck from arXiv papers or local PDFs.")
+    p = argparse.ArgumentParser(description="Generate a Beamer slide deck from arXiv papers, local PDFs, or Markdown files.")
     p.add_argument("--version", action="version", version=f"researchos {VERSION}")
     p.add_argument(
         "-a",
@@ -164,6 +168,16 @@ def parse_args() -> argparse.Namespace:
         "--pdf-url",
         action="append",
         help="Direct PDF URL (repeatable or comma-separated list)",
+    )
+    p.add_argument(
+        "--md",
+        action="append",
+        help="Path to a local Markdown file (repeatable or comma-separated list)",
+    )
+    p.add_argument(
+        "--md-dir",
+        action="append",
+        help="Directory containing Markdown files (repeatable)",
     )
     p.add_argument("--slides", "-s", type=int, default=12, help="Number of slides to generate")
     p.add_argument("--bullets", "-b", type=int, default=4, help="Number of bullets per slide")
@@ -229,6 +243,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--titles-only", action="store_true", help="Stop after slide titles (skip slide generation)")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     p.add_argument("--read", action="store_true", help="Generate reading notes (no slides)")
+    p.add_argument("--figures-only", action="store_true", help="Generate diagrams only (no slides)")
     p.add_argument("--viva-mode", action="store_true", help="Generate viva prep notes (no slides)")
     p.add_argument("--describe-experiments", action="store_true", help="Generate experiment description (no slides)")
     p.add_argument("--exam-prep", action="store_true", help="Generate exam prep materials (no slides)")
@@ -320,6 +335,27 @@ def _collect_pdfs(paths: list[str], dirs: list[str]) -> list[Path]:
     return pdfs
 
 
+def _collect_markdowns(paths: list[str], dirs: list[str]) -> list[Path]:
+    """Collect markdown files.
+    
+    Args:
+        paths (list[str]):
+        dirs (list[str]):
+    
+    Returns:
+        list[Path]:
+    """
+    mds: list[Path] = []
+    for p in _split_list_args(paths):
+        mds.append(Path(p).expanduser().resolve())
+    for d in _split_list_args(dirs):
+        dpath = Path(d).expanduser().resolve()
+        if dpath.exists() and dpath.is_dir():
+            mds.extend(sorted(dpath.glob("*.md")))
+            mds.extend(sorted(dpath.glob("*.markdown")))
+    return mds
+
+
 def _download_pdfs(urls: list[str], out_dir: Path) -> list[Path]:
     """Download pdfs.
     
@@ -384,6 +420,7 @@ def main() -> int:
             args.index_paper,
         ]
     )
+    mode_figures_only = bool(args.figures_only)
 
     ensure_requirements_installed()
 
@@ -394,10 +431,11 @@ def main() -> int:
 
     arxiv_inputs = _split_list_args(args.arxiv or [])
     pdf_paths = _collect_pdfs(args.pdf or [], args.pdf_dir or [])
+    md_paths = _collect_markdowns(args.md or [], args.md_dir or [])
     pdf_urls = _split_list_args(args.pdf_url or [])
     if not args.resume:
         if not mode_daily_brief and not mode_search and not mode_chat:
-            if not arxiv_inputs and not pdf_paths and not pdf_urls and not (args.topic or "").strip():
+            if not arxiv_inputs and not pdf_paths and not md_paths and not pdf_urls and not (args.topic or "").strip():
                 logger.error("Provide sources or use --topic for topic-only mode.")
                 return 2
 
@@ -418,6 +456,8 @@ def main() -> int:
             paper_title = arxiv_ids[0]
     elif pdf_paths:
         paper_title = pdf_paths[0].stem
+    elif md_paths:
+        paper_title = md_paths[0].stem
     elif pdf_urls:
         paper_title = Path(pdf_urls[0].split("?")[0]).stem or "paper"
     elif mode_daily_brief:
@@ -447,7 +487,7 @@ def main() -> int:
         # If user explicitly set --name, honor it verbatim (no query prefixing).
         if not (mode_daily_brief or mode_search or mode_chat):
             if args.query and not args.name:
-                if len(arxiv_ids) + len(pdf_paths) > 1:
+                if len(arxiv_ids) + len(pdf_paths) + len(md_paths) > 1:
                     run_name = f"Q-{_query_summary(args.query)}-{base_name or 'MultiSource'}"
                 else:
                     run_name = f"Q-{_query_summary(args.query)}-{base_name}"
@@ -462,6 +502,7 @@ def main() -> int:
     cfg = RunConfig(
         arxiv_ids=arxiv_ids,
         pdf_paths=pdf_paths,
+        md_paths=md_paths,
         work_dir=work_dir,
         out_dir=out_dir,
         slide_count=args.slides,
@@ -513,6 +554,7 @@ def main() -> int:
         daily_brief=bool(args.daily_brief),
         cache_summary=bool(args.cache_summary),
         chat_mode=bool(args.chat),
+        figures_only=bool(args.figures_only),
     )
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -562,6 +604,15 @@ def main() -> int:
             print("Chat history:", history_path.name)
             return 0
 
+        if mode_figures_only:
+            outputs = pipeline.generate_figures_only()
+            print("\nOutput directory:", cfg.out_dir.resolve())
+            if outputs:
+                print("Generated:", ", ".join([p.name for p in outputs]))
+            else:
+                print("Generated: (no files)")
+            return 0
+
         if non_slide_modes:
             outputs = pipeline.run_non_slide()
             summary_excerpt = ""
@@ -590,7 +641,8 @@ def main() -> int:
                     "date": today_str(),
                     "time": time.strftime("%H:%M:%S"),
                     "modes": modes,
-                    "source_label": " ".join(arxiv_ids) or (pdf_paths[0].stem if pdf_paths else (args.topic or "")),
+                    "source_label": " ".join(arxiv_ids)
+                    or (pdf_paths[0].stem if pdf_paths else (md_paths[0].stem if md_paths else (args.topic or ""))),
                     "outputs": [p.name for p in outputs],
                     "run_dir": str(run_dir),
                     "out_dir": str(cfg.out_dir),

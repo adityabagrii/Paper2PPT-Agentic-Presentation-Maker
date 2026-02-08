@@ -19,6 +19,7 @@ TQDM_NCOLS = 100
 class RunConfig:
     arxiv_ids: List[str]
     pdf_paths: List[Path]
+    md_paths: List[Path]
     work_dir: Path
     out_dir: Path
     slide_count: int
@@ -70,6 +71,7 @@ class RunConfig:
     daily_brief: bool
     cache_summary: bool
     chat_mode: bool
+    figures_only: bool
 
 
 @dataclass

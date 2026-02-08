@@ -6,6 +6,9 @@ Use this when you need to defend ideas, not just present them.
 ```bash
 researchos -a 2401.12345 --viva-mode
 ```
+## Workflow
+![Workflow](../images/viva_mode_workflow.png)
+
 
 **Output**
 - `outputs/viva_notes.md`

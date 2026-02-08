@@ -28,10 +28,10 @@ except Exception:
 
 try:
     from .pipeline_arxiv import ArxivClient
-    from .pipeline_common import RunConfig, logger, TQDM_NCOLS
+    from .pipeline_common import RunConfig, logger, TQDM_NCOLS, _progress_path
 except Exception:
     from pipeline_arxiv import ArxivClient
-    from pipeline_common import RunConfig, logger, TQDM_NCOLS
+    from pipeline_common import RunConfig, logger, TQDM_NCOLS, _progress_path
 
 
 class OutlineBuilder:
@@ -1257,6 +1257,41 @@ Generate slide #{idx}: {slide_title}
                     if item:
                         sources.append(item)
 
+        if self.cfg.md_paths:
+            def _load_md(md_path: Path) -> dict:
+                logger.info("Reading markdown file: %s", md_path)
+                try:
+                    text = md_path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    text = md_path.read_text(encoding="utf-8", errors="replace")
+                title = md_path.stem
+                for line in text.splitlines():
+                    if line.strip().startswith("#"):
+                        title = line.lstrip("#").strip() or title
+                        break
+                paper_text = text.strip()
+                logger.info("Markdown text chars: %s", len(paper_text))
+                if len(paper_text) <= 200:
+                    raise RuntimeError("Markdown text too small.")
+
+                return {
+                    "type": "markdown",
+                    "id": str(md_path),
+                    "title": title,
+                    "abstract": "",
+                    "url": str(md_path),
+                    "text": paper_text,
+                    "images": [],
+                }
+
+            max_workers = min(2, self.cfg.max_llm_workers, len(self.cfg.md_paths))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_load_md, p): p for p in self.cfg.md_paths}
+                for fut in as_completed(futures):
+                    item = fut.result()
+                    if item:
+                        sources.append(item)
+
         if self.cfg.pdf_paths:
             print("\nPDF sources:")
             for s in sources:
@@ -1269,6 +1304,12 @@ Generate slide #{idx}: {slide_title}
                 if s["type"] == "arxiv":
                     print(f"- {s['title']} ({s['id']})")
             print("")
+        if self.cfg.md_paths:
+            print("Markdown sources:")
+            for s in sources:
+                if s["type"] == "markdown":
+                    print(f"- {s['title']} ({s['id']})")
+            print("")
 
         if len(sources) == 1:
             meta = {"title": sources[0]["title"], "abstract": sources[0].get("abstract", "")}
@@ -1276,21 +1317,28 @@ Generate slide #{idx}: {slide_title}
             meta = {"title": "Multiple Sources", "abstract": "Multiple documents provided."}
         if not sources:
             raise RuntimeError(
-                "No sources collected. Topic web search returned no usable documents."
+                "No sources collected. Provide arXiv/PDF/Markdown sources or use --topic."
             )
 
-        if self.cfg.arxiv_ids and not self.cfg.pdf_paths and len(self.cfg.arxiv_ids) == 1:
+        if self.cfg.arxiv_ids and not self.cfg.pdf_paths and not self.cfg.md_paths and len(self.cfg.arxiv_ids) == 1:
             source_label = f"arXiv:{self.cfg.arxiv_ids[0]}"
-        elif self.cfg.arxiv_ids and not self.cfg.pdf_paths:
+        elif self.cfg.arxiv_ids and not self.cfg.pdf_paths and not self.cfg.md_paths:
             source_label = f"arXiv ({len(self.cfg.arxiv_ids)})"
-        elif self.cfg.pdf_paths and not self.cfg.arxiv_ids:
+        elif self.cfg.pdf_paths and not self.cfg.arxiv_ids and not self.cfg.md_paths:
             source_label = f"Local PDFs ({len(self.cfg.pdf_paths)})"
+        elif self.cfg.md_paths and not self.cfg.arxiv_ids and not self.cfg.pdf_paths:
+            source_label = f"Markdown files ({len(self.cfg.md_paths)})"
         else:
             source_label = f"Mixed sources ({len(sources)})"
 
         sources_block_lines = []
         for i, s in enumerate(sources, 1):
-            src_tag = "arXiv" if s["type"] == "arxiv" else "PDF"
+            if s["type"] == "arxiv":
+                src_tag = "arXiv"
+            elif s["type"] == "markdown":
+                src_tag = "Markdown"
+            else:
+                src_tag = "PDF"
             sources_block_lines.append(f"{i}. [{src_tag}] {s['title']} ({s['id']})")
         sources_block = "\n".join(sources_block_lines)
 

@@ -6,6 +6,9 @@ Turns a paper into practical implementation notes.
 ```bash
 researchos -a 2401.12345 --implementation-notes
 ```
+## Workflow
+![Workflow](../images/implementation_notes_workflow.png)
+
 
 **Output**
 - `outputs/implementation_notes.md`
