@@ -204,6 +204,9 @@ paper2ppt -a 2401.12345 --read --generate-flowcharts --diagram-intent-aware --di
 # Chat mode (RAG over the paper)
 paper2ppt -a 2401.12345 --chat
 
+# Resume read mode from a prior run (reuse extracted text + summary)
+paper2ppt --read --resume /path/to/run
+
 # Viva prep (no slides)
 paper2ppt -a 2401.12345 --viva-mode
 
