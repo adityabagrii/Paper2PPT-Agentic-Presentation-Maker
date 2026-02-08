@@ -621,6 +621,10 @@ Generate slide #{idx}: {slide_title}
             meta = {"title": sources[0]["title"], "abstract": sources[0].get("abstract", "")}
         else:
             meta = {"title": "Multiple Sources", "abstract": "Multiple documents provided."}
+        if not sources:
+            raise RuntimeError(
+                "No sources collected. Topic web search returned no usable documents."
+            )
 
         if self.cfg.arxiv_ids and not self.cfg.pdf_paths and len(self.cfg.arxiv_ids) == 1:
             source_label = f"arXiv:{self.cfg.arxiv_ids[0]}"
@@ -1192,8 +1196,38 @@ Topic: {self.cfg.topic}
             expanded = self.cfg.topic
             self.cfg.user_query = self.cfg.topic
 
+        # Sanitize query for web search (strip markdown markers/newlines)
+        clean_query = re.sub(r"[\\*`_#]+", " ", expanded)
+        clean_query = re.sub(r"\s+", " ", clean_query).strip()
+
+        def _keyword_query(text: str, max_terms: int = 12) -> str:
+            stop = {
+                "the", "and", "or", "of", "in", "to", "for", "with", "on", "by", "from",
+                "a", "an", "is", "are", "was", "were", "be", "as", "that", "this", "these",
+                "those", "how", "what", "why", "which", "when", "where", "who", "whom",
+                "into", "about", "across", "such", "their", "they", "them", "we", "you",
+                "your", "our", "using", "use", "used", "based", "more", "most", "less",
+                "than", "still", "also", "while", "not", "no",
+            }
+            words = re.findall(r"[A-Za-z0-9]+", text.lower())
+            filtered = [w for w in words if w not in stop and len(w) > 2]
+            # simple de-dup while preserving order
+            seen = set()
+            out = []
+            for w in filtered:
+                if w in seen:
+                    continue
+                seen.add(w)
+                out.append(w)
+                if len(out) >= max_terms:
+                    break
+            return " ".join(out)
+
+        short_query = _keyword_query(clean_query)
         logger.info("Topic expanded query: %s", expanded)
-        results = search_web(expanded, max_results=self.cfg.max_web_results)
+        logger.info("Web search query (sanitized): %s", clean_query)
+        logger.info("Web search query (keywords): %s", short_query)
+        results = search_web(short_query or clean_query, max_results=self.cfg.max_web_results)
         if self.cfg.topic_scholarly_only:
             allowed_domains = {
                 "arxiv.org",
@@ -1217,9 +1251,98 @@ Topic: {self.cfg.topic}
                 if any(host == d or host.endswith("." + d) for d in allowed_domains):
                     filtered.append(r)
             results = filtered
+        # If empty, ask LLM for search queries and retry
         if not results:
+            query_prompt = f"""
+Generate 4-6 concise web search queries (short keyword phrases) for this topic.
+Return ONLY a JSON array of strings.
+
+Topic: {self.cfg.topic}
+""".strip()
+            raw_q = safe_invoke(logger, self.llm, query_prompt, retries=4).strip()
+            try:
+                import json as _json
+
+                query_list = _json.loads(raw_q)
+                if not isinstance(query_list, list):
+                    query_list = []
+            except Exception:
+                query_list = []
+
+            if query_list:
+                print("\n----------QUERIES BY LLM----------------")
+                for i, q in enumerate(query_list, 1):
+                    print(f"{i}. {q}")
+                print("----------------------------------------\n")
+                aggregated = []
+                for q in query_list:
+                    q = str(q).strip()
+                    if not q:
+                        continue
+                    aggregated.extend(search_web(q, max_results=self.cfg.max_web_results))
+                # de-dup
+                seen = set()
+                deduped = []
+                for r in aggregated:
+                    url = r.get("url", "")
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    deduped.append(r)
+                results = deduped[: self.cfg.max_web_results]
+                if self.cfg.topic_scholarly_only:
+                    filtered = []
+                    for r in results:
+                        url = r.get("url", "")
+                        try:
+                            from urllib.parse import urlparse
+
+                            host = urlparse(url).netloc.lower()
+                        except Exception:
+                            host = ""
+                        if any(host == d or host.endswith("." + d) for d in allowed_domains):
+                            filtered.append(r)
+                    results = filtered
+
+        # Debug output for topic search
+        out_dir = self.cfg.out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results_path = out_dir / "topic_web_results.txt"
+        if results:
+            lines = []
+            for i, s in enumerate(results, 1):
+                lines.append(f"{i}. {s.get('title','')} - {s.get('url','')}\n   {s.get('snippet','')}")
+            results_path.write_text("\n".join(lines), encoding="utf-8")
+            logger.info("Topic web results saved: %s", results_path)
+            logger.info("Topic web results count: %s", len(results))
+            print("\n-----------WEB SEARCH RESULTS------------")
+            for i, s in enumerate(results, 1):
+                title = s.get("title", "")
+                url = s.get("url", "")
+                snippet = s.get("snippet", "")
+                print(f"{i}. {title}\n   {url}\n   {snippet}\n")
+            print("----------------------------------------\n")
+        else:
+            results_path.write_text("No results.\n", encoding="utf-8")
             logger.warning("No web results found for topic search.")
-            return
+            # Fallback: query arXiv directly for scholarly-only topic mode
+            if self.cfg.topic_scholarly_only:
+                try:
+                    import arxiv
+
+                    query = short_query or clean_query or self.cfg.topic
+                    search = arxiv.Search(query=query, max_results=self.cfg.max_web_results)
+                    arxiv_ids = [r.get_short_id() for r in search.results()]
+                    if arxiv_ids:
+                        logger.info("arXiv fallback results: %s", len(arxiv_ids))
+                        self.cfg.arxiv_ids = list(dict.fromkeys(self.cfg.arxiv_ids + arxiv_ids))
+                        return
+                except Exception:
+                    logger.exception("arXiv fallback search failed.")
+            hint = "Try rephrasing the topic."
+            if self.cfg.topic_scholarly_only:
+                hint += " Or disable --topic-scholarly-only."
+            raise RuntimeError(f"No web results found for topic search. {hint}")
 
         arxiv_ids = list(self.cfg.arxiv_ids)
         pdf_urls = []
