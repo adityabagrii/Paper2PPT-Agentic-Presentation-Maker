@@ -1734,6 +1734,31 @@ Sources:
         raw = safe_invoke(logger, self.llm, prompt, retries=6)
         return self._write_markdown("implementation_notes.md", raw)
 
+    def generate_reproduction_checklist(self, ctx: PaperContext) -> Path:
+        prompt = f"""
+You are producing a reproduction checklist for a research paper. Return structured markdown with these sections:
+
+## Key Hyperparameters
+## Missing Details / Ambiguities
+## Required Compute
+## Likely Traps / Failure Modes
+## Step-by-Step Reproduction Checklist
+
+Rules:
+- Use bullets in every section.
+- Be concrete, specific, and cautious about assumptions.
+- If a detail is missing from the sources, explicitly label it as missing.
+- Avoid code fences.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:5000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        return self._write_markdown("reproduction_checklist.md", raw)
+
     def index_paper(self, ctx: PaperContext) -> dict:
         prompt = f"""
 Return ONLY JSON.
@@ -1905,6 +1930,8 @@ Entries:
             outputs.append(self.generate_exam_prep(ctx))
         if self.cfg.implementation_notes:
             outputs.append(self.generate_implementation_notes(ctx))
+        if self.cfg.reproduction_checklist:
+            outputs.append(self.generate_reproduction_checklist(ctx))
         if self.cfg.index_paper:
             self.index_paper(ctx)
             outputs.append(self.cfg.out_dir / "paper_index_entry.json")

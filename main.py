@@ -233,6 +233,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--describe-experiments", action="store_true", help="Generate experiment description (no slides)")
     p.add_argument("--exam-prep", action="store_true", help="Generate exam prep materials (no slides)")
     p.add_argument("--implementation-notes", action="store_true", help="Generate implementation notes (no slides)")
+    p.add_argument(
+        "--repro-checklist",
+        action="store_true",
+        help="Generate a reproduction checklist (no slides)",
+    )
     p.add_argument("--teaching-mode", action="store_true", help="Teaching-optimized slides with pause questions")
     p.add_argument("--index-paper", action="store_true", help="Index a paper into local memory")
     p.add_argument("--search", default="", help="Search the local paper index")
@@ -375,6 +380,7 @@ def main() -> int:
             args.describe_experiments,
             args.exam_prep,
             args.implementation_notes,
+            args.repro_checklist,
             args.index_paper,
         ]
     )
@@ -501,6 +507,7 @@ def main() -> int:
         describe_experiments=bool(args.describe_experiments),
         exam_prep=bool(args.exam_prep),
         implementation_notes=bool(args.implementation_notes),
+        reproduction_checklist=bool(args.repro_checklist),
         index_paper=bool(args.index_paper),
         index_search_query=(args.search or "").strip(),
         daily_brief=bool(args.daily_brief),
@@ -574,6 +581,8 @@ def main() -> int:
                 modes.append("exam_prep")
             if args.implementation_notes:
                 modes.append("implementation_notes")
+            if args.repro_checklist:
+                modes.append("repro_checklist")
             if args.index_paper:
                 modes.append("index_paper")
             append_journal(

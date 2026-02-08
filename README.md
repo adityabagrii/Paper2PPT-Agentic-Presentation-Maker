@@ -185,6 +185,7 @@ Paper2ppt now includes several “chat-style” modes that generate structured m
 - Experiment Description Generator: datasets, baselines, metrics, protocol. See [docs/experiment_description.md](docs/experiment_description.md)
 - Exam Prep Generator: MCQs, short answers, derivations, trick questions. See [docs/exam_prep.md](docs/exam_prep.md)
 - Implementation Notes: components, training loop, losses, gotchas. See [docs/implementation_notes.md](docs/implementation_notes.md)
+- Reproduction Checklist: hyperparams, missing details, compute, traps. See [docs/reproduction_checklist.md](docs/reproduction_checklist.md)
 - Teaching Mode (slides): intuition-heavy slides + pause questions. See [docs/teaching_mode.md](docs/teaching_mode.md)
 - Persistent Paper Memory: local index + search. See [docs/paper_memory.md](docs/paper_memory.md)
 - Daily Research Brief: journal-style summary of runs. See [docs/daily_brief.md](docs/daily_brief.md)
@@ -218,6 +219,9 @@ paper2ppt -a 2401.12345 --exam-prep
 
 # Implementation notes (no slides)
 paper2ppt -a 2401.12345 --implementation-notes
+
+# Reproduction checklist (no slides)
+paper2ppt -a 2401.12345 --repro-checklist
 
 # Teaching mode (slides)
 paper2ppt -a 2401.12345 --teaching-mode -s 12 -b 4
@@ -496,6 +500,7 @@ Notes on structure:
 - `--describe-experiments` generate experiment description (no slides)
 - `--exam-prep` generate exam prep materials (no slides)
 - `--implementation-notes` generate implementation notes (no slides)
+- `--repro-checklist` generate a reproduction checklist (no slides)
 - `--teaching-mode` teaching-optimized slides with pause questions
 - `--index-paper` index a paper into local memory
 - `--search` search the local paper index
@@ -585,6 +590,7 @@ Paper2ppt/
     experiment_description.md
     exam_prep.md
     implementation_notes.md
+    reproduction_checklist.md
     teaching_mode.md
     paper_memory.md
     daily_brief.md

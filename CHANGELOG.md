@@ -2,6 +2,7 @@
 
 ## 0.7.2 - 2026-02-08
 - Added non-slide modes: `--read`, `--viva-mode`, `--describe-experiments`, `--exam-prep`, `--implementation-notes`.
+- Added reproduction checklist mode: `--repro-checklist`.
 - Added teaching slide mode with pause questions: `--teaching-mode`.
 - Added persistent paper memory (`--index-paper`, `--search`) and daily research brief (`--daily-brief`).
 - Added read-mode diagrams embedded per section (with flowcharts/diagram generation) and improved formatting.

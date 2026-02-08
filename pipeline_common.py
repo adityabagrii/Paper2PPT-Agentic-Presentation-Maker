@@ -64,6 +64,7 @@ class RunConfig:
     describe_experiments: bool
     exam_prep: bool
     implementation_notes: bool
+    reproduction_checklist: bool
     index_paper: bool
     index_search_query: str
     daily_brief: bool
