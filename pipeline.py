@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import textwrap
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,14 @@ try:
         flatten_tex,
         write_beamer,
     )
-    from .memory_utils import load_journal_for_date, now_iso, upsert_paper
+    from .memory_utils import (
+        get_cached_summary,
+        load_journal_for_date,
+        now_iso,
+        put_cached_summary,
+        upsert_paper,
+    )
+    from sentence_transformers import SentenceTransformer
 except Exception:
     from arxiv_utils import download_and_extract_arxiv_source, get_arxiv_metadata, extract_arxiv_id
     from llm import safe_invoke
@@ -45,7 +53,17 @@ except Exception:
         flatten_tex,
         write_beamer,
     )
-    from memory_utils import load_journal_for_date, now_iso, upsert_paper
+    from memory_utils import (
+        get_cached_summary,
+        load_journal_for_date,
+        now_iso,
+        put_cached_summary,
+        upsert_paper,
+    )
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        SentenceTransformer = None
 
 logger = logging.getLogger("paper2ppt")
 TQDM_NCOLS = 100
@@ -121,6 +139,7 @@ class RunConfig:
     index_paper: bool
     index_search_query: str
     daily_brief: bool
+    cache_summary: bool
 
 
 @dataclass
@@ -668,6 +687,24 @@ Chunk:
         Returns:
             str:
         """
+        cache_key = ""
+        if self.cfg.cache_summary:
+            key_material = "\n".join(
+                [
+                    meta.get("title", ""),
+                    meta.get("abstract", ""),
+                    paper_text[:100000],
+                    (self.cfg.user_query + "\n" + global_feedback).strip(),
+                    web_context[:4000],
+                    sources_block[:4000],
+                ]
+            )
+            cache_key = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
+            cached = get_cached_summary(cache_key, max_age_seconds=3 * 60 * 60)
+            if cached:
+                logger.info("Using cached summary.")
+                return cached
+
         chunks = self.chunk_text(paper_text, 1500)
         N = min(len(chunks), self.cfg.max_summary_chunks)
         chunks = chunks[:N]
@@ -729,7 +766,10 @@ Chunk:
                     )
                     sums.append(s)
                     prev_summary_preview = self._preview_text(s, max_len=50)
-        return "\n\n".join(sums)
+        merged = "\n\n".join(sums)
+        if self.cfg.cache_summary and cache_key:
+            put_cached_summary(cache_key, merged)
+        return merged
 
     def get_slide_titles(
         self,
@@ -2196,6 +2236,7 @@ class Pipeline:
         self.outline_store = OutlineJSONStore(cfg.out_dir)
         self.figure_planner = FigurePlanner()
         self.renderer = Renderer()
+        self._embedder = None
 
     def sanity_checks(self) -> None:
         """Function sanity checks.
@@ -3375,6 +3416,37 @@ Slide titles: {[s.title for s in outline.slides]}
             sources_block=sources_block,
         )
 
+        # Persist context for chat/RAG reuse
+        try:
+            ctx_path = self.cfg.out_dir / "paper_context.json"
+            chunks = self.chunk_text(paper_text, 1200)
+            embeddings = []
+            embed_model = ""
+            try:
+                embeddings, embed_model = self._embed_texts(chunks)
+            except Exception:
+                embeddings = []
+                embed_model = ""
+            ctx_path.write_text(
+                json.dumps(
+                    {
+                        "meta": meta,
+                        "sources_block": sources_block,
+                        "source_label": source_label,
+                        "summary": merged_summary,
+                        "chunks": chunks,
+                        "embeddings": embeddings,
+                        "embed_model": embed_model,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            logger.exception("Failed to write paper_context.json")
+
         return PaperContext(
             meta=meta,
             paper_text=paper_text,
@@ -3386,15 +3458,61 @@ Slide titles: {[s.title for s in outline.slides]}
             sources=sources,
         )
 
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        if not text:
+            return text
+        t = text.strip()
+        if t.startswith("```"):
+            parts = t.split("```", 2)
+            if len(parts) >= 3:
+                return parts[1].strip()
+        return t
+
+    @staticmethod
+    def _reading_notes_too_short(text: str) -> bool:
+        if not text:
+            return True
+        # Heuristic: require at least 500 words and all headings present
+        required = ["## Problem", "## Key Idea", "## Method", "## Results", "## Limitations", "## What I Learned"]
+        if any(h not in text for h in required):
+            return True
+        word_count = len(re.findall(r"[A-Za-z0-9]+", text))
+        return word_count < 500
+
     def _write_markdown(self, name: str, content: str) -> Path:
         path = self.cfg.out_dir / name
         path.write_text(content.strip() + "\n", encoding="utf-8")
         return path
 
+    def _get_embedder(self):
+        if self._embedder is not None:
+            return self._embedder
+        if SentenceTransformer is None:
+            raise RuntimeError("sentence-transformers not available")
+        self._embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        return self._embedder
+
+    def _embed_texts(self, texts: List[str]) -> Tuple[List[List[float]], str]:
+        if not texts:
+            return [], ""
+        model = self._get_embedder()
+        vecs = model.encode(texts, normalize_embeddings=True).tolist()
+        return vecs, getattr(model, "model_card", "") or "all-MiniLM-L6-v2"
+
+    @staticmethod
+    def _cosine_sim(a: List[float], b: List[float]) -> float:
+        if not a or not b or len(a) != len(b):
+            return 0.0
+        dot = 0.0
+        for i in range(len(a)):
+            dot += a[i] * b[i]
+        return dot
+
     def generate_reading_notes(self, ctx: PaperContext) -> Path:
         prompt = f"""
-You are a paper-reading assistant. Produce 1-2 pages of structured markdown.
-Use the exact section headings below:
+You are a paper-reading assistant. Produce 2-3 pages of structured markdown.
+Use the exact section headings below and do NOT wrap the output in code fences.
 
 ## Problem
 ## Key Idea
@@ -3404,29 +3522,37 @@ Use the exact section headings below:
 ## What I Learned
 
 Rules:
-- Be concise but specific.
-- Prefer short paragraphs and bullets.
+- Each section should be substantial (at least 2 short paragraphs or 5-7 bullets).
+- Cover the topic in depth, not just brief summaries.
+- Use plain markdown (no ``` fences).
+- Include the required sections at minimum; you may add more sections if helpful.
 - Stay faithful to the provided context only.
 
 Title: {ctx.meta.get('title', '')}
 Abstract: {ctx.meta.get('abstract', '')}
-Summary: {ctx.merged_summary[:4000]}
+Summary: {ctx.merged_summary[:6000]}
 Sources:
 {ctx.sources_block}
 """.strip()
         raw = safe_invoke(logger, self.llm, prompt, retries=6)
-        notes_path = self._write_markdown("reading_notes.md", raw)
+        cleaned = self._strip_code_fences(raw)
+        if self._reading_notes_too_short(cleaned):
+            refine = safe_invoke(
+                logger,
+                self.llm,
+                "Expand the reading notes in depth to at least 500 words total. "
+                "Keep the same headings and do NOT use code fences.\n\n"
+                + cleaned[:5000],
+                retries=6,
+            )
+            cleaned = self._strip_code_fences(refine) or cleaned
+        notes_path = self._write_markdown("reading_notes.md", cleaned)
         if self.cfg.generate_flowcharts:
             try:
                 diagrams = self.generate_reading_diagrams(ctx)
                 if diagrams:
-                    md = notes_path.read_text(encoding="utf-8").rstrip() + "\n\n## Diagrams\n"
-                    for d in diagrams:
-                        rel = Path(d["png"]).as_posix()
-                        cap = d.get("caption", "")
-                        md += f"\n![{cap}]({rel})\n"
-                        if cap:
-                            md += f"_Caption: {cap}_\n"
+                    md = notes_path.read_text(encoding="utf-8").rstrip()
+                    md = self._insert_section_diagrams(md, diagrams)
                     notes_path.write_text(md.strip() + "\n", encoding="utf-8")
             except Exception:
                 logger.exception("Reading diagram generation failed; continuing without diagrams.")
@@ -3464,6 +3590,7 @@ Schema:
 {{
   "diagrams": [
     {{
+      "section": "Problem|Key Idea|Method|Results|Limitations|What I Learned",
       "type": "comparison|taxonomy|pipeline|problem_solution|flowchart",
       "title": "string",
       "nodes": ["string", "..."],
@@ -3474,11 +3601,12 @@ Schema:
 }}
 
 Rules:
-- Provide 2-3 diagrams total.
+- Provide 5-7 diagrams total.
 - Keep nodes short (2-6 words).
 - Use 6-10 nodes per diagram.
 - Use edges to encode relationships (label can be empty).
 - Prefer diagrams that explain the problem and method.
+- Ensure each required section has at least one diagram assigned via the 'section' field.
 
 Title: {ctx.meta.get('title', '')}
 Abstract: {ctx.meta.get('abstract', '')}
@@ -3510,7 +3638,7 @@ Sources:
         flow_dir = self.cfg.out_dir / "flowcharts"
         flow_dir.mkdir(parents=True, exist_ok=True)
         rendered: List[dict] = []
-        for i, d in enumerate(diagrams[:3], 1):
+        for i, d in enumerate(diagrams[:7], 1):
             nodes = [str(n).strip() for n in d.get("nodes", []) if str(n).strip()]
             if len(nodes) < 3:
                 continue
@@ -3536,8 +3664,53 @@ Sources:
             except Exception:
                 logger.exception("Failed to render reading diagram %s", i)
                 continue
-            rendered.append({"png": str(png_path.relative_to(self.cfg.out_dir)), "caption": title or d.get("caption", "")})
+            rendered.append(
+                {
+                    "png": str(png_path.relative_to(self.cfg.out_dir)),
+                    "caption": title or d.get("caption", ""),
+                    "section": str(d.get("section", "")).strip(),
+                }
+            )
         return rendered
+
+    @staticmethod
+    def _insert_section_diagrams(md: str, diagrams: List[dict]) -> str:
+        if not md or not diagrams:
+            return md
+        section_map = {}
+        for d in diagrams:
+            sec = d.get("section", "").strip()
+            if not sec:
+                continue
+            section_map.setdefault(sec, []).append(d)
+
+        def _block(ds: List[dict]) -> str:
+            out = []
+            for d in ds:
+                rel = d.get("png", "")
+                cap = d.get("caption", "")
+                if not rel:
+                    continue
+                out.append(f"![{cap}]({rel})")
+                if cap:
+                    out.append(f"_Caption: {cap}_")
+                out.append("")
+            return "\n".join(out).rstrip()
+
+        lines = md.splitlines()
+        out_lines = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            out_lines.append(line)
+            m = re.match(r"^##\s+(.+?)\s*$", line)
+            if m:
+                sec = m.group(1).strip()
+                if sec in section_map:
+                    out_lines.append("")
+                    out_lines.append(_block(section_map[sec]))
+            i += 1
+        return "\n".join(out_lines).strip()
 
     def generate_experiment_description(self, ctx: PaperContext) -> Path:
         prompt = f"""
@@ -3726,6 +3899,137 @@ Entries:
             outputs.append(self.cfg.out_dir / "paper_index_entry.json")
 
         return outputs
+
+    def chat_with_paper(self) -> Path:
+        """Interactive chat about the paper using simple retrieval."""
+        self.sanity_checks()
+        self.prepare_topic_sources()
+
+        ctx_path = self.cfg.out_dir / "paper_context.json"
+        if ctx_path.exists():
+            try:
+                obj = json.loads(ctx_path.read_text(encoding="utf-8"))
+                meta = obj.get("meta", {})
+                summary = obj.get("summary", "")
+                sources_block = obj.get("sources_block", "")
+                chunks = obj.get("chunks", [])
+                embeddings = obj.get("embeddings", [])
+            except Exception:
+                meta = {}
+                summary = ""
+                sources_block = ""
+                chunks = []
+                embeddings = []
+        else:
+            ctx = self.build_paper_context()
+            meta = ctx.meta
+            summary = ctx.merged_summary
+            sources_block = ctx.sources_block
+            chunks = self.chunk_text(ctx.paper_text, 1200)
+            embeddings = []
+
+        if not chunks:
+            chunks = [summary] if summary else []
+        if chunks and not embeddings:
+            try:
+                embeddings, _ = self._embed_texts(chunks)
+                ctx_path.write_text(
+                    json.dumps(
+                        {
+                            "meta": meta,
+                            "sources_block": sources_block,
+                            "source_label": meta.get("title", ""),
+                            "summary": summary,
+                            "chunks": chunks,
+                            "embeddings": embeddings,
+                            "embed_model": "all-MiniLM-L6-v2",
+                        },
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                embeddings = []
+
+        history_path = self.cfg.out_dir / "chat_history.md"
+        history_path.write_text(
+            f"# Paper Chat\n\nTitle: {meta.get('title','')}\n\nSources:\n{sources_block}\n\n",
+            encoding="utf-8",
+        )
+
+        print("\nChat mode started. Type a question, or 'exit' to quit.\n")
+        while True:
+            q = input("You> ").strip()
+            if not q:
+                continue
+            if q.lower() in {"exit", "quit", "q"}:
+                break
+
+            if embeddings:
+                retrieved = self._retrieve_chunks_semantic(q, chunks, embeddings, k=4)
+            else:
+                retrieved = self._retrieve_chunks(q, chunks, k=4)
+            context_block = "\n\n".join([f"[Chunk {i+1}]\n{c}" for i, c in enumerate(retrieved)])
+            prompt = f"""
+You are a helpful research assistant. Answer the question strictly using the provided context.
+If the answer is not in the context, say so and ask a clarifying question.
+
+Title: {meta.get('title','')}
+Summary: {summary[:2000]}
+Sources:
+{sources_block}
+
+Context:
+{context_block}
+
+Question: {q}
+""".strip()
+
+            a = safe_invoke(logger, self.llm, prompt, retries=6).strip()
+            if not a:
+                a = "I couldn't generate an answer. Please rephrase."
+            print(f"\nAssistant> {a}\n")
+
+            with history_path.open("a", encoding="utf-8") as f:
+                f.write(f"## Q\n{q}\n\n## A\n{a}\n\n")
+
+        print(f"Chat history saved to: {history_path}")
+        return history_path
+
+    @staticmethod
+    def _retrieve_chunks(query: str, chunks: List[str], k: int = 4) -> List[str]:
+        terms = set(re.findall(r"[A-Za-z0-9]+", query.lower()))
+        if not terms:
+            return chunks[:k]
+        scored = []
+        for c in chunks:
+            text = c.lower()
+            score = sum(1 for t in terms if t in text)
+            scored.append((score, c))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [c for _s, c in scored[:k]]
+
+    def _retrieve_chunks_semantic(
+        self,
+        query: str,
+        chunks: List[str],
+        embeddings: List[List[float]],
+        k: int = 4,
+    ) -> List[str]:
+        if not chunks or not embeddings or len(chunks) != len(embeddings):
+            return self._retrieve_chunks(query, chunks, k=k)
+        try:
+            qvecs, _ = self._embed_texts([query])
+            qvec = qvecs[0] if qvecs else []
+        except Exception:
+            return self._retrieve_chunks(query, chunks, k=k)
+        scored = []
+        for i, vec in enumerate(embeddings):
+            scored.append((self._cosine_sim(qvec, vec), chunks[i]))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [c for _s, c in scored[:k]]
 
     def run(self) -> Tuple[DeckOutline, Optional[Path], Optional[Path]]:
         """Run.

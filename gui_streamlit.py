@@ -411,6 +411,7 @@ def main() -> None:
             index_paper=False,
             index_search_query="",
             daily_brief=False,
+            cache_summary=False,
         )
 
         cfg.out_dir.mkdir(parents=True, exist_ok=True)

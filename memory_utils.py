@@ -22,6 +22,10 @@ def journal_path() -> Path:
     return _storage_dir() / "journal.jsonl"
 
 
+def summary_cache_path() -> Path:
+    return _storage_dir() / "summary_cache.json"
+
+
 def load_index() -> Dict[str, Any]:
     path = index_path()
     if not path.exists():
@@ -34,6 +38,78 @@ def load_index() -> Dict[str, Any]:
 
 def save_index(data: Dict[str, Any]) -> None:
     index_path().write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def load_summary_cache() -> Dict[str, Any]:
+    path = summary_cache_path()
+    if not path.exists():
+        return {"items": []}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"items": []}
+
+
+def save_summary_cache(data: Dict[str, Any]) -> None:
+    summary_cache_path().write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
+def purge_summary_cache(max_age_seconds: int) -> int:
+    data = load_summary_cache()
+    items = data.get("items", [])
+    if not items:
+        return 0
+    now = datetime.now().timestamp()
+    kept = []
+    removed = 0
+    for it in items:
+        ts = it.get("created_at_ts")
+        if isinstance(ts, (int, float)) and now - ts > max_age_seconds:
+            removed += 1
+            continue
+        kept.append(it)
+    if removed:
+        data["items"] = kept
+        save_summary_cache(data)
+    return removed
+
+
+def get_cached_summary(cache_key: str, max_age_seconds: int) -> str | None:
+    data = load_summary_cache()
+    now = datetime.now().timestamp()
+    for it in data.get("items", []):
+        if it.get("key") != cache_key:
+            continue
+        ts = it.get("created_at_ts")
+        if isinstance(ts, (int, float)) and now - ts <= max_age_seconds:
+            return it.get("summary", "") or None
+    return None
+
+
+def put_cached_summary(cache_key: str, summary: str) -> None:
+    data = load_summary_cache()
+    items = data.get("items", [])
+    now_ts = datetime.now().timestamp()
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    for it in items:
+        if it.get("key") == cache_key:
+            it["summary"] = summary
+            it["created_at"] = now_iso
+            it["created_at_ts"] = now_ts
+            save_summary_cache(data)
+            return
+    items.append(
+        {
+            "key": cache_key,
+            "summary": summary,
+            "created_at": now_iso,
+            "created_at_ts": now_ts,
+        }
+    )
+    data["items"] = items
+    save_summary_cache(data)
 
 
 def upsert_paper(entry: Dict[str, Any]) -> bool:

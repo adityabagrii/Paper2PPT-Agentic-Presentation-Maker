@@ -17,6 +17,7 @@ dependencies = [
   "python-dotenv",
   "streamlit",
   "rich",
+  "sentence-transformers",
 ]
 
 [project.scripts]

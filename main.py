@@ -18,14 +18,14 @@ try:
     from .llm import LLMConfig, init_llm
     from .logging_utils import setup_logging
     from .pipeline import Pipeline, RunConfig
-    from .memory_utils import append_journal, search_index, today_str
+    from .memory_utils import append_journal, purge_summary_cache, search_index, today_str
 except Exception:
     sys.path.append(str(Path(__file__).resolve().parent))
     from arxiv_utils import extract_arxiv_id, get_arxiv_metadata
     from llm import LLMConfig, init_llm
     from logging_utils import setup_logging
     from pipeline import Pipeline, RunConfig
-    from memory_utils import append_journal, search_index, today_str
+    from memory_utils import append_journal, purge_summary_cache, search_index, today_str
 
 logger = logging.getLogger("paper2ppt")
 VERSION = "0.6.4"
@@ -227,6 +227,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--index-paper", action="store_true", help="Index a paper into local memory")
     p.add_argument("--search", default="", help="Search the local paper index")
     p.add_argument("--daily-brief", action="store_true", help="Generate a daily research brief")
+    p.add_argument("--cache-summary", action="store_true", help="Cache paper summaries for faster runs (3h TTL)")
+    p.add_argument("--purge-cache", action="store_true", help="Purge expired summary cache and exit")
+    p.add_argument("--chat", action="store_true", help="Chat with the paper using stored context (RAG-style)")
     return p.parse_args()
 
 
@@ -353,6 +356,8 @@ def main() -> int:
 
     mode_daily_brief = bool(args.daily_brief)
     mode_search = bool((args.search or "").strip())
+    mode_purge_cache = bool(args.purge_cache)
+    mode_chat = bool(args.chat)
     non_slide_modes = any(
         [
             args.read,
@@ -366,11 +371,16 @@ def main() -> int:
 
     ensure_requirements_installed()
 
+    if mode_purge_cache:
+        removed = purge_summary_cache(3 * 60 * 60)
+        print(f"Purged {removed} cached summaries older than 3 hours.")
+        return 0
+
     arxiv_inputs = _split_list_args(args.arxiv or [])
     pdf_paths = _collect_pdfs(args.pdf or [], args.pdf_dir or [])
     pdf_urls = _split_list_args(args.pdf_url or [])
     if not args.resume:
-        if not mode_daily_brief and not mode_search:
+        if not mode_daily_brief and not mode_search and not mode_chat:
             if not arxiv_inputs and not pdf_paths and not pdf_urls and not (args.topic or "").strip():
                 logger.error("Provide sources or use --topic for topic-only mode.")
                 return 2
@@ -398,6 +408,8 @@ def main() -> int:
         paper_title = f"DailyBrief_{today_str()}"
     elif mode_search:
         paper_title = f"IndexSearch_{_query_summary(args.search)}"
+    elif mode_chat:
+        paper_title = f"Chat_{_slugify('paper')}"
 
     if args.resume:
         resume_path = Path(args.resume).expanduser().resolve()
@@ -417,7 +429,7 @@ def main() -> int:
         base_name = _slugify(args.name) if args.name else _slugify(paper_title)
         run_name = base_name
         # If user explicitly set --name, honor it verbatim (no query prefixing).
-        if not (mode_daily_brief or mode_search):
+        if not (mode_daily_brief or mode_search or mode_chat):
             if args.query and not args.name:
                 if len(arxiv_ids) + len(pdf_paths) > 1:
                     run_name = f"Q-{_query_summary(args.query)}-{base_name or 'MultiSource'}"
@@ -482,6 +494,7 @@ def main() -> int:
         index_paper=bool(args.index_paper),
         index_search_query=(args.search or "").strip(),
         daily_brief=bool(args.daily_brief),
+        cache_summary=bool(args.cache_summary),
     )
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -523,6 +536,12 @@ def main() -> int:
             out_path = pipeline.generate_daily_brief(date_str)
             print("\nOutput directory:", cfg.out_dir.resolve())
             print("Daily brief:", out_path.name)
+            return 0
+
+        if mode_chat:
+            history_path = pipeline.chat_with_paper()
+            print("\nOutput directory:", cfg.out_dir.resolve())
+            print("Chat history:", history_path.name)
             return 0
 
         if non_slide_modes:

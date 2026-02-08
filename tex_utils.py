@@ -135,7 +135,7 @@ def strip_latex_commands(s: str) -> str:
     Returns:
         str:
     """
-    s = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^}]*\})?", " ", s)
+    s = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^]]*\])?(?:\{[^}]*\})?", " ", s)
     s = s.replace("\\", " ").replace("{", " ").replace("}", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -180,9 +180,22 @@ def _esc(s: str) -> str:
     )
 
 
-def _image_frames(sl: DeckOutline, title: str = "") -> list[str]:
+def _slide_get(sl, key: str, default=None):
+    if hasattr(sl, key):
+        return getattr(sl, key)
+    if isinstance(sl, dict):
+        return sl.get(key, default)
+    return default
+
+
+def _slide_list(sl, key: str) -> list:
+    val = _slide_get(sl, key, [])
+    return val if isinstance(val, list) else []
+
+
+def _image_frames(sl, title: str = "") -> list[str]:
     frames: list[str] = []
-    captions = list(getattr(sl, "image_captions", []) or [])
+    captions = list(_slide_list(sl, "image_captions") or [])
     cap_idx = 0
 
     def _frame(img_path: str, caption: str, prefix: str) -> str:
@@ -203,15 +216,19 @@ def _image_frames(sl: DeckOutline, title: str = "") -> list[str]:
 """.strip()
 
     flow_caption = ""
-    if getattr(sl, "flowchart", None) and getattr(sl.flowchart, "caption", ""):
-        flow_caption = getattr(sl.flowchart, "caption", "")
+    flowchart = _slide_get(sl, "flowchart", None)
+    if flowchart:
+        if isinstance(flowchart, dict):
+            flow_caption = flowchart.get("caption", "") or ""
+        else:
+            flow_caption = getattr(flowchart, "caption", "") or ""
 
-    if getattr(sl, "flowchart_images", None):
-        for p in sl.flowchart_images:
+    for p in _slide_list(sl, "flowchart_images"):
+        if p:
             frames.append(_frame(p, flow_caption, "Diagram"))
 
-    if getattr(sl, "generated_images", None):
-        for p in sl.generated_images:
+    for p in _slide_list(sl, "generated_images"):
+        if p:
             cap = ""
             if cap_idx < len(captions):
                 cap = captions[cap_idx]
@@ -232,17 +249,26 @@ def beamer_from_outline(outline: DeckOutline) -> str:
     """
     slides_tex = []
     for sl in outline.slides:
-        bullets = "\n".join([f"\\item {_esc(b)}" for b in sl.bullets])
+        bullets_list = _slide_list(sl, "bullets")
+        bullets = "\n".join([f"\\item {_esc(b)}" for b in bullets_list])
 
         figs = ""
-        if sl.figure_suggestions:
-            figs = "\\vspace{0.4em}\n{\\footnotesize\\textit{Figure ideas:} " + _esc("; ".join(sl.figure_suggestions)) + "}"
+        fig_sugs = _slide_list(sl, "figure_suggestions")
+        if fig_sugs:
+            figs = "\\vspace{0.4em}\n{\\footnotesize\\textit{Figure ideas:} " + _esc("; ".join(fig_sugs)) + "}"
 
         tables_tex = ""
-        if getattr(sl, "tables", None):
-            for t in sl.tables:
-                cols = [str(c) for c in getattr(t, "columns", [])]
-                rows = [r for r in getattr(t, "rows", [])]
+        tables = _slide_list(sl, "tables")
+        if tables:
+            for t in tables:
+                if isinstance(t, dict):
+                    cols = [str(c) for c in t.get("columns", [])]
+                    rows = [r for r in t.get("rows", [])]
+                    title = t.get("title", "") or "Results"
+                else:
+                    cols = [str(c) for c in getattr(t, "columns", [])]
+                    rows = [r for r in getattr(t, "rows", [])]
+                    title = getattr(t, "title", "") or "Results"
                 if not cols or not rows:
                     continue
                 col_spec = " | ".join(["l"] * len(cols))
@@ -251,7 +277,7 @@ def beamer_from_outline(outline: DeckOutline) -> str:
                 for r in rows:
                     body_lines.append(" & ".join([_esc(str(x)) for x in r]) + " \\\\")
                 body = "\n".join(body_lines)
-                title = _esc(getattr(t, "title", "") or "Results")
+                title = _esc(str(title))
                 tables_tex += (
                     "\n\\vspace{0.4em}\n"
                     f"{{\\footnotesize\\textit{{Table:}} {title}}}\n"
@@ -265,15 +291,16 @@ def beamer_from_outline(outline: DeckOutline) -> str:
                 )
 
         notes = ""
-        if sl.speaker_notes.strip():
+        speaker_notes = _slide_get(sl, "speaker_notes", "") or ""
+        if str(speaker_notes).strip():
             notes = (
                 "\\vspace{0.4em}\n"
-                f"{{\\footnotesize\\textit{{Notes:}} {_esc(sl.speaker_notes)}}}"
+                f"{{\\footnotesize\\textit{{Notes:}} {_esc(str(speaker_notes))}}}"
             )
 
         slides_tex.append(
             f"""
-\\begin{{frame}}[t,allowframebreaks]{{{_esc(sl.title)}}}
+\\begin{{frame}}[t,allowframebreaks]{{{_esc(str(_slide_get(sl, 'title', 'Slide')))}}}
 \\begin{{itemize}}
 {bullets}
 \\end{{itemize}}
@@ -283,7 +310,7 @@ def beamer_from_outline(outline: DeckOutline) -> str:
 \\end{{frame}}
 """.strip()
         )
-        slides_tex.extend(_image_frames(sl, title=sl.title))
+        slides_tex.extend(_image_frames(sl, title=str(_slide_get(sl, "title", ""))))
 
     refs = ""
     if outline.citations:
@@ -375,18 +402,19 @@ def beamer_from_outline_with_figs(outline: DeckOutline, fig_plan: dict) -> str:
 
     slides_tex = []
     for idx, sl in enumerate(outline.slides, 1):
-        bullets = "\n".join([f"\\item {_esc(b)}" for b in sl.bullets])
+        bullets_list = _slide_list(sl, "bullets")
+        bullets = "\n".join([f"\\item {_esc(b)}" for b in bullets_list])
         slides_tex.append(
             f"""
-\\begin{{frame}}[t,allowframebreaks]{{{_esc(sl.title)}}}
+\\begin{{frame}}[t,allowframebreaks]{{{_esc(str(_slide_get(sl, 'title', 'Slide')))}}}
 \\begin{{itemize}}
 {bullets}
 \\end{{itemize}}
-{("\\vspace{0.3em}\n{\\footnotesize\\textit{Notes:} " + _esc(sl.speaker_notes) + "}") if sl.speaker_notes.strip() else ""}
+{("\\vspace{0.3em}\n{\\footnotesize\\textit{Notes:} " + _esc(str(_slide_get(sl, 'speaker_notes', ''))) + "}") if str(_slide_get(sl, 'speaker_notes', '')).strip() else ""}
 \\end{{frame}}
 """.strip()
         )
-        slides_tex.extend(_image_frames(sl, title=sl.title))
+        slides_tex.extend(_image_frames(sl, title=str(_slide_get(sl, "title", ""))))
         figs = fig_map.get(idx, [])
         if figs:
             f0 = figs[0]["file"]

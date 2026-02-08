@@ -6,3 +6,4 @@ tqdm
 langchain-nvidia-ai-endpoints
 python-dotenv
 streamlit
+sentence-transformers
