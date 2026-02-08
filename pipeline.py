@@ -4004,7 +4004,11 @@ Entries:
             encoding="utf-8",
         )
 
-        print("\nChat mode started. Type a question, or 'exit' to quit.\n")
+        console = _get_console()
+        if console and Panel:
+            console.print(Panel("Chat mode started. Type a question, or 'exit' to quit.", title="Paper2ppt Chat"))
+        else:
+            print("\nChat mode started. Type a question, or 'exit' to quit.\n")
         while True:
             q = input("You> ").strip()
             if not q:
@@ -4035,12 +4039,18 @@ Question: {q}
             a = safe_invoke(logger, self.llm, prompt, retries=6).strip()
             if not a:
                 a = "I couldn't generate an answer. Please rephrase."
-            print(f"\nAssistant> {a}\n")
+            if console and Panel:
+                console.print(Panel(a, title="Assistant", border_style="green"))
+            else:
+                print(f"\nAssistant> {a}\n")
 
             with history_path.open("a", encoding="utf-8") as f:
                 f.write(f"## Q\n{q}\n\n## A\n{a}\n\n")
 
-        print(f"Chat history saved to: {history_path}")
+        if console and Panel:
+            console.print(Panel(f"Chat history saved to: {history_path}", title="Saved", border_style="cyan"))
+        else:
+            print(f"Chat history saved to: {history_path}")
         return history_path
 
     @staticmethod
