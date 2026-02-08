@@ -19,7 +19,7 @@ try:
     from .models import DeckOutline
     from .pdf_utils import extract_pdf_content
     from .web_utils import search_web
-    from .flowchart_utils import build_graphviz, render_graphviz
+    from .flowchart_utils import build_graphviz, build_graphviz_from_nodes_edges, render_graphviz
     from .tex_utils import (
         beamer_from_outline,
         beamer_from_outline_with_figs,
@@ -34,7 +34,7 @@ except Exception:
     from models import DeckOutline
     from pdf_utils import extract_pdf_content
     from web_utils import search_web
-    from flowchart_utils import build_graphviz, render_graphviz
+    from flowchart_utils import build_graphviz, build_graphviz_from_nodes_edges, render_graphviz
     from tex_utils import (
         beamer_from_outline,
         beamer_from_outline_with_figs,
@@ -436,8 +436,10 @@ Rules:
 - no extra keys
 - For method/system/algorithm slides, include a deep flowchart in flowchart.steps.
 - Flowchart steps should be specific mechanisms (not vague).
+- Prefer different diagram structures across slides (linear/branch/cycle).
 - If not suitable, set flowchart.steps to [] and caption to "".
-- graphviz_diagram_ideas should mention other diagram types: dependency graph, DAG, hierarchy, decision tree, etc.
+- graphviz_diagram_ideas should mention other diagram types: comparison chart, dependency graph, DAG, hierarchy, decision tree, ablation map, problem-solution map.
+- Focus on visually depicting both the problem statement and the solution; diagrams should carry essential information.
 {source_rule}
 {query_rule}
 
@@ -1228,11 +1230,37 @@ with key sub-questions and keywords. Return a single paragraph query.
 Topic: {self.cfg.topic}
 """.strip()
         expanded = safe_invoke(logger, self.llm, prompt, retries=6).strip()
-        if expanded:
-            self.cfg.user_query = expanded
-        else:
+        if not expanded:
             expanded = self.cfg.topic
-            self.cfg.user_query = self.cfg.topic
+        # Query approval + feedback loop
+        for _ in range(3):
+            print("\nExpanded topic query:\n")
+            print(expanded)
+            ans = input("\nApprove query? Type 'y' to approve, or provide feedback to refine: ").strip()
+            if ans.lower() in {"y", "yes"}:
+                break
+            if ans:
+                refine_prompt = f"""
+Refine the topic query based on user feedback. Return a single paragraph query.
+
+Original topic: {self.cfg.topic}
+Current query: {expanded}
+User feedback: {ans}
+""".strip()
+                expanded = safe_invoke(logger, self.llm, refine_prompt, retries=6).strip() or expanded
+            else:
+                break
+
+        self.cfg.user_query = expanded
+
+        # Persist the expanded query to both work/ and outputs/
+        try:
+            self.cfg.work_dir.mkdir(parents=True, exist_ok=True)
+            self.cfg.out_dir.mkdir(parents=True, exist_ok=True)
+            (self.cfg.work_dir / "query.txt").write_text(expanded + "\n", encoding="utf-8")
+            (self.cfg.out_dir / "query.txt").write_text(expanded + "\n", encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to write query.txt")
 
         # Sanitize query for web search (strip markdown markers/newlines)
         clean_query = re.sub(r"[\\*`_#]+", " ", expanded)
@@ -1582,6 +1610,128 @@ Topic hint: {topic_hint}
                 continue
             slide.flowchart_images.append(str(png_path))
 
+    def _attach_figures_from_arxiv_sources(self, outline: DeckOutline) -> None:
+        """Select and attach figures from all available arXiv sources using LLM + captions."""
+        if not self.cfg.arxiv_ids:
+            return
+        fig_assets = []
+        for arxiv_id in self.cfg.arxiv_ids:
+            try:
+                arxiv_work = self.cfg.work_dir / f"arxiv_{arxiv_id}"
+                src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
+                main_tex = find_main_tex_file(src_dir)
+                flat = flatten_tex(main_tex, max_files=120)
+                fig_assets.extend(self.figure_planner.extract_figures(flat, src_dir))
+            except Exception:
+                logger.exception("Skipping figure extraction for arXiv: %s", arxiv_id)
+                continue
+        if not fig_assets:
+            return
+
+        fig_plan = self.figure_planner.plan_with_llm(self.llm, outline, fig_assets, max_figs=12)
+        resolved = self.figure_planner.materialize(fig_plan, fig_assets, self.cfg.out_dir)
+
+        for s in resolved.get("slides", []):
+            idx = s.get("slide_index")
+            if not idx or idx < 1 or idx > len(outline.slides):
+                continue
+            for g in s.get("figures", []):
+                fpath = g.get("file")
+                caption = g.get("caption", "")
+                if not fpath:
+                    continue
+                outline.slides[idx - 1].generated_images.append(str(fpath))
+                if caption:
+                    outline.slides[idx - 1].image_captions.append(str(caption))
+
+    def _generate_deck_diagrams(self, outline: DeckOutline) -> None:
+        """Generate 2-3 deck-level diagrams that summarize key ideas across slides."""
+        prompt = f"""
+You are designing diagrams that carry core information for the entire deck.
+Generate 2-3 diagram specs that visually explain the problem, solution, and comparisons.
+
+Return ONLY JSON in this schema:
+{{
+  "diagrams": [
+    {{
+      "type": "comparison|taxonomy|pipeline|problem_solution|flowchart",
+      "title": "string",
+      "nodes": ["string", "..."],
+      "edges": [["from","to","label"], "..."], // label can be empty string
+      "caption": "string"
+    }}
+  ]
+}}
+
+Rules:
+- Prefer diagrams that replace text: show problem framing, method pipeline, and comparisons.
+- Keep nodes short (2-6 words).
+- Use 6-10 nodes per diagram.
+- Use at least one comparison diagram if applicable.
+- Use edges to encode relationships (e.g., improves, reduces, enables).
+
+Deck title: {outline.deck_title}
+Slide titles: {[s.title for s in outline.slides]}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            fix = safe_invoke(
+                logger,
+                self.llm,
+                "Return ONLY valid JSON for the schema. Fix this:\n" + raw[:1800],
+                retries=6,
+            )
+            obj = json.loads(fix)
+
+        diagrams = obj.get("diagrams", [])
+        if not isinstance(diagrams, list) or not diagrams:
+            return
+
+        deck_dir = self.cfg.out_dir / "flowcharts"
+        deck_dir.mkdir(parents=True, exist_ok=True)
+
+        for i, d in enumerate(diagrams[:3], 1):
+            nodes = [str(n).strip() for n in d.get("nodes", []) if str(n).strip()]
+            if len(nodes) < 3:
+                continue
+            edges_raw = d.get("edges", [])
+            edges = []
+            if isinstance(edges_raw, list):
+                for e in edges_raw:
+                    if isinstance(e, list) and len(e) >= 2:
+                        a = str(e[0]).strip()
+                        b = str(e[1]).strip()
+                        lbl = str(e[2]).strip() if len(e) > 2 else ""
+                        if a and b:
+                            edges.append((a, b, lbl))
+            title = str(d.get("title", "")).strip()
+            dtype = str(d.get("type", "pipeline")).strip().lower()
+            rankdir = "LR" if dtype in {"pipeline", "flowchart"} else "TB"
+            dot = build_graphviz_from_nodes_edges(nodes, edges, title=title, rankdir=rankdir)
+            dot_path = deck_dir / f"deck_diagram_{i:02d}.dot"
+            png_path = deck_dir / f"deck_diagram_{i:02d}.png"
+            dot_path.write_text(dot, encoding="utf-8")
+            try:
+                render_graphviz(dot_path, png_path)
+            except Exception:
+                logger.exception("Failed to render deck diagram %s", i)
+                continue
+
+            outline.slides.append(
+                {
+                    "title": title or f"Diagram {i}",
+                    "bullets": [],
+                    "speaker_notes": "",
+                    "figure_suggestions": [],
+                    "generated_images": [],
+                    "flowchart": {"steps": [], "structure": "linear", "caption": ""},
+                    "flowchart_images": [str(png_path)],
+                    "graphviz_diagram_ideas": [],
+                }
+            )
+
     def build_outline_with_approval(self, max_rounds: int = 3) -> Tuple[DeckOutline, Dict[str, Any]]:
         progress = self._load_progress()
         if progress and progress.get("stage") in {"titles", "slides"}:
@@ -1725,21 +1875,27 @@ Topic hint: {topic_hint}
         if self.cfg.generate_flowcharts:
             try:
                 self._render_flowcharts(outline)
+                self._generate_deck_diagrams(outline)
             except Exception:
                 logger.exception("Flowchart generation failed; continuing without flowcharts.")
 
-        if self.cfg.use_figures and (self.cfg.pdf_paths or len(self.cfg.arxiv_ids) != 1):
-            logger.warning("Figure insertion requires exactly one arXiv source; continuing without figures.")
-            tex_path, pdf_path = self.renderer.render(outline, self.cfg.out_dir)
-        elif self.cfg.use_figures:
-            tex_path, pdf_path = self.renderer.render_with_figs(
-                self.llm,
-                outline,
-                self.cfg.arxiv_ids[0],
-                self.cfg.work_dir,
-                self.cfg.out_dir,
-                self.figure_planner,
-            )
+        if self.cfg.use_figures:
+            # For topic/multi-source runs, attach figures via LLM+captions instead of strict single-arXiv flow.
+            if self.cfg.pdf_paths or len(self.cfg.arxiv_ids) != 1:
+                try:
+                    self._attach_figures_from_arxiv_sources(outline)
+                except Exception:
+                    logger.exception("Figure attachment failed; continuing without figures.")
+                tex_path, pdf_path = self.renderer.render(outline, self.cfg.out_dir)
+            else:
+                tex_path, pdf_path = self.renderer.render_with_figs(
+                    self.llm,
+                    outline,
+                    self.cfg.arxiv_ids[0],
+                    self.cfg.work_dir,
+                    self.cfg.out_dir,
+                    self.figure_planner,
+                )
         else:
             tex_path, pdf_path = self.renderer.render(outline, self.cfg.out_dir)
 

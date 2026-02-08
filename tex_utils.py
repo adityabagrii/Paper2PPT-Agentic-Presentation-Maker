@@ -132,10 +132,27 @@ def beamer_from_outline(outline: DeckOutline) -> str:
                 img_lines.append(f"\\includegraphics[width=0.9\\linewidth]{{{_esc(p)}}}")
         if img_lines:
             gen_imgs = "\\vspace{0.6em}\n" + "\\\\\n".join(img_lines)
+            # Per-image captions if provided
+            if getattr(sl, "image_captions", None):
+                for cap in sl.image_captions:
+                    if cap.strip():
+                        gen_imgs += (
+                            "\n\\vspace{0.3em}\n"
+                            f"{{\\footnotesize\\textit{{Figure:}} {_esc(cap)}}}"
+                        )
+            # Flowchart caption
+            if getattr(sl, "flowchart", None) and getattr(sl.flowchart, "caption", ""):
+                gen_imgs += (
+                    "\n\\vspace{0.4em}\n"
+                    f"{{\\footnotesize\\textit{{Diagram:}} {_esc(sl.flowchart.caption)}}}"
+                )
 
         notes = ""
         if sl.speaker_notes.strip():
-            notes = f"\\vspace{{0.4em}}\\n\\\\footnotesize\\\\textit{{Notes:}} {_esc(sl.speaker_notes)}"
+            notes = (
+                "\\vspace{0.4em}\n"
+                f"{{\\footnotesize\\textit{{Notes:}} {_esc(sl.speaker_notes)}}}"
+            )
 
         slides_tex.append(
             f"""
@@ -164,12 +181,12 @@ def beamer_from_outline(outline: DeckOutline) -> str:
 """.strip()
             )
 
-    maintenance = (
+    credit = (
         f"""
-\\begin{{frame}}[t]{{Maintenance Note}}
-\\begin{{itemize}}
-\\item After any version upgrade, run: \\texttt{{pip install -r requirements.txt}} from the codebase directory.
-\\end{{itemize}}
+\\begin{{frame}}[t]{{}}
+\\centering
+{{\\LARGE Presentation generated using Paper2PPT}}\\\\[0.6em]
+{{\\large by Aditya Bagri}}
 \\end{{frame}}
 """.strip()
     )
@@ -201,7 +218,7 @@ def beamer_from_outline(outline: DeckOutline) -> str:
 
 {refs}
 
-{maintenance}
+{credit}
 
 \\end{{document}}
 """.strip()
@@ -234,6 +251,18 @@ def beamer_from_outline_with_figs(outline: DeckOutline, fig_plan: dict) -> str:
                 img_lines.append(f"\\includegraphics[width=0.9\\linewidth]{{{_esc(p)}}}")
         if img_lines:
             gen_imgs = "\\vspace{0.6em}\n" + "\\\\\n".join(img_lines)
+            if getattr(sl, "image_captions", None):
+                for cap in sl.image_captions:
+                    if cap.strip():
+                        gen_imgs += (
+                            "\n\\vspace{0.3em}\n"
+                            f"{{\\footnotesize\\textit{{Figure:}} {_esc(cap)}}}"
+                        )
+            if getattr(sl, "flowchart", None) and getattr(sl.flowchart, "caption", ""):
+                gen_imgs += (
+                    "\n\\vspace{0.4em}\n"
+                    f"{{\\footnotesize\\textit{{Diagram:}} {_esc(sl.flowchart.caption)}}}"
+                )
 
         slides_tex.append(
             f"""
@@ -242,7 +271,7 @@ def beamer_from_outline_with_figs(outline: DeckOutline, fig_plan: dict) -> str:
 {bullets}
 \\end{{itemize}}
 {gen_imgs}
-{("\\vspace{0.3em}\\n\\\\footnotesize\\\\textit{Notes:} " + _esc(sl.speaker_notes)) if sl.speaker_notes.strip() else ""}
+{("\\vspace{0.3em}\n{\\footnotesize\\textit{Notes:} " + _esc(sl.speaker_notes) + "}") if sl.speaker_notes.strip() else ""}
 \\end{{frame}}
 """.strip()
         )

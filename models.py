@@ -18,6 +18,7 @@ class SlideSpec(BaseModel):
     speaker_notes: str = ""
     figure_suggestions: List[str] = Field(default_factory=list)
     generated_images: List[str] = Field(default_factory=list)
+    image_captions: List[str] = Field(default_factory=list)
     flowchart: FlowchartSpec = Field(default_factory=FlowchartSpec)
     flowchart_images: List[str] = Field(default_factory=list)
     graphviz_diagram_ideas: List[str] = Field(default_factory=list)

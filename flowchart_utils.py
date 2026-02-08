@@ -50,6 +50,39 @@ def build_graphviz(steps: List[str], structure: str = "linear") -> str:
     return "\n".join(lines)
 
 
+def build_graphviz_from_nodes_edges(
+    nodes: List[str],
+    edges: List[tuple[str, str, str]],
+    title: str = "",
+    rankdir: str = "LR",
+) -> str:
+    lines = [
+        "digraph Diagram {",
+        f"  rankdir={rankdir};",
+        "  node [shape=box, style=rounded, fontsize=12];",
+    ]
+    if title:
+        lines.append(f'  label="{title}";')
+        lines.append("  labelloc=t;")
+        lines.append("  fontsize=14;")
+
+    for n in nodes:
+        lines.append(f'  "{_sanitize_label(n)}";')
+
+    if edges:
+        for a, b, lbl in edges:
+            if lbl:
+                lines.append(f'  "{_sanitize_label(a)}" -> "{_sanitize_label(b)}" [label="{_sanitize_label(lbl, 24)}"];')
+            else:
+                lines.append(f'  "{_sanitize_label(a)}" -> "{_sanitize_label(b)}";')
+    else:
+        for i in range(len(nodes) - 1):
+            lines.append(f'  "{_sanitize_label(nodes[i])}" -> "{_sanitize_label(nodes[i+1])}";')
+
+    lines.append("}")
+    return "\n".join(lines)
+
+
 def render_graphviz(dot_path: Path, out_path: Path) -> None:
     if shutil.which("dot"):
         subprocess.run(["dot", "-Tpng", str(dot_path), "-o", str(out_path)], check=True)
