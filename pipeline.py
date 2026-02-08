@@ -3547,6 +3547,40 @@ Slide titles: {[s.title for s in outline.slides]}
 
     def generate_reading_notes(self, ctx: PaperContext) -> Path:
         sections = ["Problem", "Key Idea", "Method", "Results", "Limitations", "What I Learned"]
+        min_words = 120
+
+        def _gen_section(sec: str, min_words_required: int) -> str:
+            base_prompt = f"""
+Write the **{sec}** section for the reading notes in markdown.
+
+Rules:
+- Provide 2-3 paragraphs OR 6-10 bullets.
+- Be detailed and specific; explain core concepts clearly.
+- Do NOT use code fences.
+- Only write content for this section (no other headings).
+- Ensure at least {min_words_required} words.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:6000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+            last = base_prompt
+            for attempt in range(3):
+                raw = safe_invoke(logger, self.llm, last, retries=6)
+                cleaned = self._strip_code_fences(raw).strip()
+                word_count = len(re.findall(r"[A-Za-z0-9]+", cleaned))
+                if cleaned and word_count >= min_words_required:
+                    return cleaned
+                last = (
+                    f"Expand the **{sec}** section to be more detailed (>= {min_words_required} words). "
+                    "Do NOT use code fences. Only write the section content.\n\n"
+                    f"Title: {ctx.meta.get('title', '')}\n"
+                    f"Summary: {ctx.merged_summary[:6000]}\n"
+                )
+            return cleaned or "TBD: Section generation failed."
+
         pieces = []
         with tqdm(
             sections,
@@ -3557,25 +3591,9 @@ Slide titles: {[s.title for s in outline.slides]}
         ) as bar:
             for sec in bar:
                 bar.set_postfix_str(f"section: {sec}")
-            logger.info("Generating reading section: %s", sec)
-            prompt = f"""
-Write the **{sec}** section for the reading notes in markdown.
-
-Rules:
-- Provide 2-3 paragraphs OR 6-10 bullets.
-- Be detailed and specific; explain core concepts clearly.
-- Do NOT use code fences.
-- Only write content for this section (no other headings).
-
-Title: {ctx.meta.get('title', '')}
-Abstract: {ctx.meta.get('abstract', '')}
-Summary: {ctx.merged_summary[:6000]}
-Sources:
-{ctx.sources_block}
-""".strip()
-            raw = safe_invoke(logger, self.llm, prompt, retries=6)
-            cleaned = self._strip_code_fences(raw)
-            pieces.append(f"## {sec}\n{cleaned.strip()}\n")
+                logger.info("Generating reading section: %s", sec)
+                body = _gen_section(sec, min_words)
+                pieces.append(f"## {sec}\n{body.strip()}\n")
 
         combined = "\n".join(pieces).strip()
         if self._reading_notes_too_short(combined):
@@ -3590,27 +3608,22 @@ Sources:
             ) as bar:
                 for sec in bar:
                     bar.set_postfix_str(f"section: {sec}")
-                logger.info("Expanding reading section: %s", sec)
-                prompt = f"""
-Expand the **{sec}** section to be more detailed (>= 120 words).
-Do NOT use code fences. Only write the section content.
-
-Title: {ctx.meta.get('title', '')}
-Summary: {ctx.merged_summary[:6000]}
-""".strip()
-                raw = safe_invoke(logger, self.llm, prompt, retries=6)
-                cleaned = self._strip_code_fences(raw)
-                expanded.append(f"## {sec}\n{cleaned.strip()}\n")
+                    logger.info("Expanding reading section: %s", sec)
+                    body = _gen_section(sec, min_words)
+                    expanded.append(f"## {sec}\n{body.strip()}\n")
             combined = "\n".join(expanded).strip()
 
         notes_path = self._write_markdown("reading_notes.md", combined)
         if self.cfg.generate_flowcharts:
             try:
+                logger.info("Generating reading diagrams...")
                 diagrams = self.generate_reading_diagrams(ctx)
                 if diagrams:
                     md = notes_path.read_text(encoding="utf-8").rstrip()
                     md = self._insert_section_diagrams(md, diagrams)
                     notes_path.write_text(md.strip() + "\n", encoding="utf-8")
+                else:
+                    logger.warning("No diagrams generated for reading notes.")
             except Exception:
                 logger.exception("Reading diagram generation failed; continuing without diagrams.")
         return notes_path
@@ -3690,7 +3703,23 @@ Sources:
 
         diagrams = obj.get("diagrams", [])
         if not isinstance(diagrams, list) or not diagrams:
-            return []
+            # Retry once with a more constrained prompt
+            retry = safe_invoke(
+                logger,
+                self.llm,
+                "Return ONLY JSON with 5-7 diagrams and include 'section' for each. Use the original schema.",
+                retries=6,
+            )
+            js = OutlineBuilder.try_extract_json(retry)
+            if not js:
+                return []
+            try:
+                obj = json.loads(js)
+            except Exception:
+                return []
+            diagrams = obj.get("diagrams", [])
+            if not isinstance(diagrams, list) or not diagrams:
+                return []
 
         flow_dir = self.cfg.out_dir / "flowcharts"
         flow_dir.mkdir(parents=True, exist_ok=True)
@@ -3995,15 +4024,6 @@ Entries:
                     source_label = progress.get("source_label", "")
                     web_context = progress.get("web_context", "")
                     citations = progress.get("citations", [])
-                    if paper_text and not merged_summary:
-                        logger.info("Resuming summary generation from progress.json")
-                        merged_summary = self.outline_builder.summarize_text(
-                            paper_text,
-                            meta,
-                            global_feedback="",
-                            web_context=web_context,
-                            sources_block=sources_block,
-                        )
                     if paper_text:
                         ctx = PaperContext(
                             meta=meta,
@@ -4015,6 +4035,11 @@ Entries:
                             citations=citations,
                             sources=[],
                         )
+            if ctx is not None and not ctx.merged_summary:
+                raise RuntimeError(
+                    "Resume requested for read mode but no merged_summary found. "
+                    "Re-run without --resume to regenerate summary, or ensure paper_context.json exists."
+                )
             if ctx is None:
                 logger.warning(
                     "Resume requested but no paper_context.json or usable progress.json found. "

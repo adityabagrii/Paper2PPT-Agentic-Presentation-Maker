@@ -14,8 +14,9 @@ from typing import List
 import streamlit as st
 
 from arxiv_utils import extract_arxiv_id, get_arxiv_metadata
-from llm import LLMConfig, init_llm
+from llm import LLMConfig, init_llm, safe_invoke
 from logging_utils import setup_logging
+from memory_utils import search_index, today_str
 from pipeline import Pipeline, RunConfig
 
 
@@ -282,7 +283,7 @@ def main() -> None:
     """
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
-    st.caption("Create Beamer presentations from arXiv papers and local PDFs.")
+    st.caption("Create Beamer presentations and reading artifacts from arXiv papers and local PDFs.")
 
     if "uploads" not in st.session_state:
         st.session_state["uploads"] = []
@@ -309,20 +310,46 @@ def main() -> None:
                 st.session_state["uploads"] = []
 
         st.header("Run Settings")
+        mode = st.selectbox(
+            "Mode",
+            [
+                "Slides",
+                "Read Notes",
+                "Viva Notes",
+                "Experiment Description",
+                "Exam Prep",
+                "Implementation Notes",
+                "Index Paper",
+                "Search Index",
+                "Daily Brief",
+                "Chat",
+            ],
+        )
         slides = st.number_input("Slides", min_value=2, max_value=60, value=10, step=1)
         bullets = st.number_input("Bullets per slide", min_value=1, max_value=10, value=4, step=1)
         query = st.text_input("User query")
         use_figures = st.checkbox("Use figures (single arXiv only)")
         generate_flowcharts = st.checkbox("Generate flowcharts (Graphviz)")
+        diagram_intent_aware = st.checkbox("Diagram intent-aware")
+        diagram_style = st.selectbox("Diagram style", ["flowchart", "block", "sequence", "dag"], index=0)
         min_flowcharts = st.number_input("Min flowcharts", min_value=0, max_value=10, value=3, step=1)
         max_flowcharts = st.number_input("Max flowcharts", min_value=0, max_value=10, value=4, step=1)
         with_notes = st.checkbox("Include speaker notes")
+        teaching_mode = st.checkbox("Teaching mode (pause questions)")
+        require_evidence = st.checkbox("Require evidence tags")
+        auto_comparisons = st.checkbox("Auto comparisons")
+        baseline_framing = st.checkbox("Baseline framing")
+        quant_results = st.checkbox("Quant results table")
         skip_sanity = st.checkbox("Skip LLM sanity check")
         approve = st.checkbox("Require outline approval", value=True)
         retry_slides = st.number_input("Retry slides", min_value=1, max_value=6, value=3, step=1)
         web_search = st.checkbox("Enable web search", value=True)
         model = st.text_input("NVIDIA model", value="nvidia/llama-3.1-nemotron-ultra-253b-v1")
         max_llm_workers = st.number_input("Max LLM workers", min_value=1, max_value=16, value=4, step=1)
+        cache_summary = st.checkbox("Cache summaries (3h TTL)")
+        resume_path = st.text_input("Resume path (optional)")
+        search_query = st.text_input("Index search query", value="") if mode == "Search Index" else ""
+        chat_question = st.text_input("Chat question", value="") if mode == "Chat" else ""
 
         default_root = st.session_state["gui_config"].get(
             "root_dir", str(Path.home() / "paper2ppt_runs")
@@ -356,7 +383,7 @@ def main() -> None:
     st.write(f"Run directory: {run_dir}")
 
     if st.button("Run Paper2ppt"):
-        if not arxiv_ids and not pdf_paths:
+        if mode not in {"Daily Brief", "Search Index"} and not arxiv_ids and not pdf_paths:
             st.error("Provide at least one source to continue.")
             return
 
@@ -381,7 +408,7 @@ def main() -> None:
             retry_empty=3,
             interactive=False,
             check_interval=5,
-            resume_path=None,
+            resume_path=Path(resume_path).expanduser().resolve() if resume_path else None,
             generate_flowcharts=generate_flowcharts,
             min_flowcharts=int(min_flowcharts),
             max_flowcharts=int(max_flowcharts),
@@ -393,26 +420,26 @@ def main() -> None:
             max_web_pdfs=4,
             topic_scholarly_only=False,
             titles_only=False,
-            diagram_style="flowchart",
+            diagram_style=diagram_style,
             topic_must_include=[],
             topic_exclude=[],
             topic_allow_domains=[],
-            require_evidence=False,
-            diagram_intent_aware=False,
-            auto_comparisons=False,
-            baseline_framing=False,
-            quant_results=False,
-            teaching_mode=False,
-            read_mode=False,
-            viva_mode=False,
-            describe_experiments=False,
-            exam_prep=False,
-            implementation_notes=False,
-            index_paper=False,
-            index_search_query="",
-            daily_brief=False,
-            cache_summary=False,
-            chat_mode=False,
+            require_evidence=require_evidence,
+            diagram_intent_aware=diagram_intent_aware,
+            auto_comparisons=auto_comparisons,
+            baseline_framing=baseline_framing,
+            quant_results=quant_results,
+            teaching_mode=teaching_mode,
+            read_mode=(mode == "Read Notes"),
+            viva_mode=(mode == "Viva Notes"),
+            describe_experiments=(mode == "Experiment Description"),
+            exam_prep=(mode == "Exam Prep"),
+            implementation_notes=(mode == "Implementation Notes"),
+            index_paper=(mode == "Index Paper"),
+            index_search_query=search_query,
+            daily_brief=(mode == "Daily Brief"),
+            cache_summary=cache_summary,
+            chat_mode=(mode == "Chat"),
         )
 
         cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -443,10 +470,57 @@ def main() -> None:
                         "llm": llm,
                     }
                 pipeline = Pipeline(cfg, llm)
-                outline, tex_path, pdf_path = pipeline.run()
-                result["outline"] = outline
-                result["tex_path"] = tex_path
-                result["pdf_path"] = pdf_path
+                if mode == "Daily Brief":
+                    out_path = pipeline.generate_daily_brief(today_str())
+                    result["daily_brief"] = out_path
+                elif mode == "Search Index":
+                    result["search_results"] = search_index(search_query)
+                elif mode == "Chat":
+                    ctx_path = cfg.out_dir / "paper_context.json"
+                    if not ctx_path.exists():
+                        pipeline.build_paper_context()
+                    obj = json.loads(ctx_path.read_text(encoding="utf-8"))
+                    meta = obj.get("meta", {})
+                    summary = obj.get("summary", "")
+                    sources_block = obj.get("sources_block", "")
+                    chunks = obj.get("chunks", [])
+                    embeddings = obj.get("embeddings", [])
+                    if not embeddings:
+                        try:
+                            embeddings, _ = pipeline._embed_texts(chunks)
+                        except Exception:
+                            embeddings = []
+                    if chat_question.strip():
+                        if embeddings:
+                            retrieved = pipeline._retrieve_chunks_semantic(chat_question, chunks, embeddings, k=4)
+                        else:
+                            retrieved = pipeline._retrieve_chunks(chat_question, chunks, k=4)
+                        context_block = "\n\n".join([f"[Chunk {i+1}]\n{c}" for i, c in enumerate(retrieved)])
+                        prompt = f"""
+You are a helpful research assistant. Answer the question strictly using the provided context.
+If the answer is not in the context, say so and ask a clarifying question.
+
+Title: {meta.get('title','')}
+Summary: {summary[:2000]}
+Sources:
+{sources_block}
+
+Context:
+{context_block}
+
+Question: {chat_question}
+""".strip()
+                        answer = safe_invoke(logging.getLogger("paper2ppt"), llm, prompt, retries=6).strip()
+                        result["chat_answer"] = answer
+                else:
+                    if mode == "Slides":
+                        outline, tex_path, pdf_path = pipeline.run()
+                        result["outline"] = outline
+                        result["tex_path"] = tex_path
+                        result["pdf_path"] = pdf_path
+                    else:
+                        outputs = pipeline.run_non_slide()
+                        result["outputs"] = outputs
             except Exception as exc:
                 result["error"] = str(exc)
 
@@ -463,8 +537,21 @@ def main() -> None:
             st.error(result["error"])
         else:
             st.success("Done")
-            st.write(f"TeX: {result['tex_path']}")
-            st.write(f"PDF: {result['pdf_path']}")
+            if "tex_path" in result:
+                st.write(f"TeX: {result['tex_path']}")
+            if "pdf_path" in result:
+                st.write(f"PDF: {result['pdf_path']}")
+            if "outputs" in result:
+                st.write("Generated outputs:")
+                st.write([str(p) for p in result["outputs"]])
+            if "daily_brief" in result:
+                st.write(f"Daily brief: {result['daily_brief']}")
+            if "search_results" in result:
+                st.write("Search results:")
+                st.write(result["search_results"])
+            if "chat_answer" in result:
+                st.markdown("**Answer:**")
+                st.write(result["chat_answer"])
             st.write("Output directory:")
             st.write(str(cfg.out_dir.resolve()))
 
