@@ -547,34 +547,59 @@ Generate slide #{idx}: {slide_title}
         if self.cfg.arxiv_ids:
             logger.info("Fetching arXiv metadata and sources...")
             for arxiv_id in self.cfg.arxiv_ids:
-                meta = self.arxiv_client.get_metadata(arxiv_id)
-                title = meta.get("title", arxiv_id)
-                abstract = meta.get("abstract", "")
-                url = meta.get("url", "")
+                try:
+                    meta = self.arxiv_client.get_metadata(arxiv_id)
+                    title = meta.get("title", arxiv_id)
+                    abstract = meta.get("abstract", "")
+                    url = meta.get("url", "")
 
-                logger.info("Downloading and extracting arXiv source: %s", arxiv_id)
-                arxiv_work = self.cfg.work_dir / f"arxiv_{arxiv_id}"
-                src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
-                main_tex = find_main_tex_file(src_dir)
-                flat = flatten_tex(main_tex, max_files=120)
-                paper_text = build_paper_text(flat, max_chars=None)
+                    logger.info("Downloading and extracting arXiv source: %s", arxiv_id)
+                    arxiv_work = self.cfg.work_dir / f"arxiv_{arxiv_id}"
+                    src_dir = None
+                    last_err = None
+                    for attempt in range(1, 4):
+                        try:
+                            src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
+                            break
+                        except Exception as e:
+                            last_err = e
+                            logger.warning("arXiv source download failed (%s/%s) for %s", attempt, 3, arxiv_id)
+                    if src_dir is None:
+                        raise RuntimeError(f"Failed to download arXiv source for {arxiv_id}: {last_err}")
 
-                logger.info("Main TeX file: %s", main_tex)
-                logger.info("paper_text chars: %s", len(paper_text))
-                if len(paper_text) <= 500:
-                    raise RuntimeError("paper_text too small; main tex likely wrong.")
+                    main_tex = None
+                    last_err = None
+                    for attempt in range(1, 4):
+                        try:
+                            main_tex = find_main_tex_file(src_dir)
+                            break
+                        except Exception as e:
+                            last_err = e
+                            logger.warning("Main TeX discovery failed (%s/%s) for %s", attempt, 3, arxiv_id)
+                    if main_tex is None:
+                        raise RuntimeError(f"Failed to find main TeX for {arxiv_id}: {last_err}")
 
-                sources.append(
-                    {
-                        "type": "arxiv",
-                        "id": arxiv_id,
-                        "title": title,
-                        "abstract": abstract,
-                        "url": url,
-                        "text": paper_text,
-                        "images": [],
-                    }
-                )
+                    flat = flatten_tex(main_tex, max_files=120)
+                    paper_text = build_paper_text(flat, max_chars=None)
+
+                    logger.info("Main TeX file: %s", main_tex)
+                    logger.info("paper_text chars: %s", len(paper_text))
+                    if len(paper_text) <= 500:
+                        raise RuntimeError("paper_text too small; main tex likely wrong.")
+
+                    sources.append(
+                        {
+                            "type": "arxiv",
+                            "id": arxiv_id,
+                            "title": title,
+                            "abstract": abstract,
+                            "url": url,
+                            "text": paper_text,
+                            "images": [],
+                        }
+                    )
+                except Exception:
+                    logger.exception("Skipping arXiv source due to errors: %s", arxiv_id)
 
         if self.cfg.pdf_paths:
             for pdf_path in self.cfg.pdf_paths:

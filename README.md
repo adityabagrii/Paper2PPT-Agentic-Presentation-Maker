@@ -229,6 +229,9 @@ Expand topic -> focused research query (LLM)
 Web search -> collect candidate sources
   |
   v
+If few/no results, ask LLM for search queries -> re-run search
+  |
+  v
 Filter sources:
   - arXiv links -> add as arXiv inputs
   - PDF links -> download to work/web_pdfs/
@@ -257,10 +260,13 @@ Render Beamer LaTeX -> Compile PDF
 - Use `--max-web-pdfs` to cap downloads for speed.
 - Topic mode stores the expanded query in `outputs/topic.txt` and uses it as the deck’s guiding question.
 - Use `--topic-scholarly-only` to reduce noise and keep sources to reputable venues.
+- Debug logs:
+  - LLM-suggested search queries are printed to console.
+  - Web results are printed and saved to `outputs/topic_web_results.txt`.
 
 ### What Happens Under the Hood (Topic Mode)
 1. **Topic expansion (LLM):** Your topic is expanded into a research-grade query with key sub-questions and keywords.
-2. **Source discovery:** Web search collects candidate sources; optional scholarly-only filtering keeps arXiv/CVPR/ICML/NeurIPS/Scholar.
+2. **Source discovery:** Web search collects candidate sources; if few results, the LLM proposes keyword queries and the search is retried. Optional scholarly-only filtering keeps arXiv/CVPR/ICML/NeurIPS/Scholar.
 3. **Source acquisition:** arXiv links are downloaded as LaTeX sources; PDFs are fetched into `work/web_pdfs/`.
 4. **Text extraction:** LaTeX is flattened; PDFs are parsed into text (plus image references).
 5. **Summarization:** The corpus is chunked and summarized, then merged.
