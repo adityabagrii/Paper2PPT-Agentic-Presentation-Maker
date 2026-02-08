@@ -153,11 +153,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--work-dir", "-wdir", default=None, help="Working directory (overrides --root-dir)")
     p.add_argument("--out-dir", "-odir", default=None, help="Output directory (overrides --root-dir)")
     p.add_argument("--max-summary-chunks", "-msc", type=int, default=30, help="Max summary chunks to process")
+    p.add_argument("--topic", default="", help="Topic-only mode: research and generate from a topic")
+    p.add_argument("--max-web-results", type=int, default=6, help="Max web results to consider in topic mode")
+    p.add_argument("--max-web-pdfs", type=int, default=4, help="Max PDFs to download in topic mode")
+    p.add_argument(
+        "--topic-scholarly-only",
+        action="store_true",
+        help="Restrict topic mode to scholarly sources (arXiv/CVPR/ICML/NeurIPS/Scholar)",
+    )
     p.add_argument("--no-approve", "-na", action="store_true", help="Skip outline approval loop")
     p.add_argument("--skip-llm-sanity", "-llms", action="store_true", help="Skip LLM sanity check")
     p.add_argument("--model", "-m", default="nvidia/llama-3.1-nemotron-ultra-253b-v1", help="NVIDIA NIM model name")
     p.add_argument("--use-figures", "-uf", action="store_true", help="Enable figure selection and insertion")
     p.add_argument("--with-speaker-notes", "-wsn", action="store_true", help="Generate speaker notes for each slide")
+    p.add_argument("--titles-only", action="store_true", help="Stop after slide titles (skip slide generation)")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
     return p.parse_args()
 
@@ -240,8 +249,8 @@ def main() -> int:
     arxiv_inputs = _split_list_args(args.arxiv or [])
     pdf_paths = _collect_pdfs(args.pdf or [], args.pdf_dir or [])
     pdf_urls = _split_list_args(args.pdf_url or [])
-    if not arxiv_inputs and not pdf_paths and not pdf_urls:
-        logger.error("Provide at least one source via --arxiv, --pdf, --pdf-dir, or --pdf-url.")
+    if not arxiv_inputs and not pdf_paths and not pdf_urls and not (args.topic or "").strip():
+        logger.error("Provide sources or use --topic for topic-only mode.")
         return 2
 
     arxiv_ids: list[str] = []
@@ -313,6 +322,11 @@ def main() -> int:
         flowchart_structure="linear",
         flowchart_depth=8,
         max_llm_workers=max(1, args.max_llm_workers),
+        topic=(args.topic or "").strip(),
+        max_web_results=max(1, args.max_web_results),
+        max_web_pdfs=max(0, args.max_web_pdfs),
+        topic_scholarly_only=bool(args.topic_scholarly_only),
+        titles_only=bool(args.titles_only),
     )
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -349,4 +363,6 @@ paper2ppt -a "1811.12432, 2404.04346, 2510.13891, 2503.13139, 2502.21271"\
     -u https://openaccess.thecvf.com/content/CVPR2025/papers/Buch_Flexible_Frame_Selection_for_Efficient_Video_Reasoning_CVPR_2025_paper.pdf\
     -s 15 -b 4 -q "Compare these key frame detection algorithms list their similarities and differences among each other and based on the results from the papers talk about the most efficient approach"\
     -rs 2 -msc 40 -llms -uf -wsn -n "KeyFrameComparisionWithImages" -gi
+    
+paper2ppt -s 12 -b 4 -n KFDImportance -rs 2 -re 2 -gf -minf 3 -maxf 6 -msc 45 -llms -wsn -uf --topic "Create a research-oriented presentation deck that critically examines why key-frame-based video representations are more efficient and often more effective than processing entire videos in Vision–Language Models (VLMs). The deck should motivate the problem using the computational and token-budget constraints of modern multimodal models, explain the redundancy inherent in dense video frames, and argue how selecting a small, semantically meaningful subset of frames preserves essential information while dramatically reducing compute, memory, and latency. Ground the discussion in representative research such as TokenLearner (NeurIPS 2021), Flexible Frame Selection (CVPR 2023), KOALA: Keyframe-Conditioned Long Video Understanding (CVPR 2024), K-Frames (2024/2025), and Adaptive Keyframe Sampling for Long Video Understanding (CVPR 2025), highlighting both learned and heuristic key-frame selection strategies. The presentation should balance theoretical intuition with empirical evidence from the literature, discuss when key frames outperform full-video processing for tasks like classification, question answering, and reasoning, and honestly address limitations and scenarios where full temporal context is still required, concluding with future directions toward adaptive, query-aware, and efficiency-driven video understanding in VLMs." --max-web-results 20 --max-web-pdfs 10 --topic-scholarly-only
 """

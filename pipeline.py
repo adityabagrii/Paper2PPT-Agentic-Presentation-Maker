@@ -7,7 +7,6 @@ import re
 import shutil
 import subprocess
 import textwrap
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -547,8 +546,7 @@ Generate slide #{idx}: {slide_title}
 
         if self.cfg.arxiv_ids:
             logger.info("Fetching arXiv metadata and sources...")
-
-            def _load_arxiv(arxiv_id: str) -> dict:
+            for arxiv_id in self.cfg.arxiv_ids:
                 meta = self.arxiv_client.get_metadata(arxiv_id)
                 title = meta.get("title", arxiv_id)
                 abstract = meta.get("abstract", "")
@@ -566,24 +564,20 @@ Generate slide #{idx}: {slide_title}
                 if len(paper_text) <= 500:
                     raise RuntimeError("paper_text too small; main tex likely wrong.")
 
-                return {
-                    "type": "arxiv",
-                    "id": arxiv_id,
-                    "title": title,
-                    "abstract": abstract,
-                    "url": url,
-                    "text": paper_text,
-                    "images": [],
-                }
-
-            max_workers = min(self.cfg.max_llm_workers, len(self.cfg.arxiv_ids))
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(_load_arxiv, a): a for a in self.cfg.arxiv_ids}
-                for fut in as_completed(futures):
-                    sources.append(fut.result())
+                sources.append(
+                    {
+                        "type": "arxiv",
+                        "id": arxiv_id,
+                        "title": title,
+                        "abstract": abstract,
+                        "url": url,
+                        "text": paper_text,
+                        "images": [],
+                    }
+                )
 
         if self.cfg.pdf_paths:
-            def _load_pdf(pdf_path: Path) -> dict:
+            for pdf_path in self.cfg.pdf_paths:
                 logger.info("Reading local PDF: %s", pdf_path)
                 pdf_work = self.cfg.work_dir / f"pdf_{pdf_path.stem}"
                 pdf_data = extract_pdf_content(pdf_path, pdf_work)
@@ -598,21 +592,17 @@ Generate slide #{idx}: {slide_title}
                 if len(paper_text) <= 200 and not images_block:
                     raise RuntimeError("PDF text too small and no images found; scanned PDF may require OCR.")
 
-                return {
-                    "type": "pdf",
-                    "id": str(pdf_path),
-                    "title": pdf_data["title"],
-                    "abstract": "",
-                    "url": str(pdf_path),
-                    "text": paper_text,
-                    "images": pdf_data["images"],
-                }
-
-            max_workers = min(self.cfg.max_llm_workers, len(self.cfg.pdf_paths))
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(_load_pdf, p): p for p in self.cfg.pdf_paths}
-                for fut in as_completed(futures):
-                    sources.append(fut.result())
+                sources.append(
+                    {
+                        "type": "pdf",
+                        "id": str(pdf_path),
+                        "title": pdf_data["title"],
+                        "abstract": "",
+                        "url": str(pdf_path),
+                        "text": paper_text,
+                        "images": pdf_data["images"],
+                    }
+                )
 
         if self.cfg.pdf_paths:
             print("\nPDF sources:")
@@ -687,52 +677,30 @@ Generate slide #{idx}: {slide_title}
         sums: List[str] = []
 
         logger.info("Summarizing paper (%s chunks)...", N)
+        if N == 0:
+            raise RuntimeError("No text chunks available for summarization.")
         prev_summary_preview = ""
-        if N > 1:
-            self._checkpoint("Summarize (parallel)", 0, N)
-            max_workers = min(self.cfg.max_llm_workers, N)
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {}
-                for i in range(1, N + 1):
-                    futures[
-                        pool.submit(
-                            self.summarize_chunk,
-                            i,
-                            chunks[i - 1],
-                            meta,
-                            (self.cfg.user_query + "\n" + global_feedback).strip(),
-                            web_context,
-                            sources_block,
-                        )
-                    ] = i
-                results: dict[int, str] = {}
-                with tqdm(
-                    total=N,
-                    desc="Summarize",
-                    unit="chunk",
-                    ncols=TQDM_NCOLS,
-                    dynamic_ncols=False,
-                ) as bar:
-                    for fut in as_completed(futures):
-                        i = futures[fut]
-                        s = fut.result()
-                        results[i] = s
-                        prev_summary_preview = self._preview_text(s, max_len=50)
-                        bar.set_postfix_str(f"chunk: {i}/{N} | prev: {prev_summary_preview}")
-                        bar.update(1)
-                for i in range(1, N + 1):
-                    if i in results:
-                        sums.append(results[i])
-        else:
-            s = self.summarize_chunk(
-                1,
-                chunks[0],
-                meta,
-                (self.cfg.user_query + "\n" + global_feedback).strip(),
-                web_context,
-                sources_block,
-            )
-            sums.append(s)
+        with tqdm(
+            range(1, N + 1),
+            desc="Summarize",
+            unit="chunk",
+            ncols=TQDM_NCOLS,
+            dynamic_ncols=False,
+        ) as bar:
+            for i in bar:
+                self._checkpoint("Summarize", i, N)
+                chunk_preview = self._preview_text(chunks[i - 1], max_len=50)
+                bar.set_postfix_str(f"chunk: {chunk_preview} | prev: {prev_summary_preview}")
+                s = self.summarize_chunk(
+                    i,
+                    chunks[i - 1],
+                    meta,
+                    (self.cfg.user_query + "\n" + global_feedback).strip(),
+                    web_context,
+                    sources_block,
+                )
+                sums.append(s)
+                prev_summary_preview = self._preview_text(s, max_len=50)
 
         merged_summary = "\n\n".join(sums)
 
@@ -1176,8 +1144,8 @@ class Pipeline:
             raise ValueError("slide_count must be >= 2")
         if self.cfg.bullets_per_slide < 1:
             raise ValueError("bullets_per_slide must be >= 1")
-        if not self.cfg.arxiv_ids and not self.cfg.pdf_paths:
-            raise ValueError("At least one arXiv ID or PDF path must be provided")
+        if not self.cfg.arxiv_ids and not self.cfg.pdf_paths and not self.cfg.topic:
+            raise ValueError("Provide arXiv/PDF sources or use --topic")
         for p in self.cfg.pdf_paths:
             if not p.exists():
                 raise FileNotFoundError(f"PDF not found: {p}")
@@ -1274,14 +1242,15 @@ Topic: {self.cfg.topic}
         if pdf_urls:
             download_dir = self.cfg.work_dir / "web_pdfs"
             download_dir.mkdir(parents=True, exist_ok=True)
-            def _download_pdf(u: str) -> Optional[Path]:
+            for u in pdf_urls:
                 try:
                     name = Path(u.split("?")[0]).name or "paper.pdf"
                     if not name.lower().endswith(".pdf"):
                         name = name + ".pdf"
                     target = download_dir / name
                     if target.exists() and target.stat().st_size > 0:
-                        return target
+                        self.cfg.pdf_paths.append(target)
+                        continue
                     import requests
 
                     r = requests.get(u, stream=True, timeout=60)
@@ -1290,18 +1259,9 @@ Topic: {self.cfg.topic}
                         for chunk in r.iter_content(chunk_size=1024 * 256):
                             if chunk:
                                 f.write(chunk)
-                    return target
+                    self.cfg.pdf_paths.append(target)
                 except Exception:
                     logger.exception("Failed to download PDF from %s", u)
-                    return None
-
-            max_workers = min(self.cfg.max_llm_workers, len(pdf_urls))
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(_download_pdf, u): u for u in pdf_urls}
-                for fut in as_completed(futures):
-                    p = fut.result()
-                    if p:
-                        self.cfg.pdf_paths.append(p)
 
     @staticmethod
     def print_outline(outline: DeckOutline) -> None:
@@ -1413,7 +1373,7 @@ Topic hint: {topic_hint}
         if not indices:
             return
 
-        def _build_one(i: int) -> tuple[int, str | None]:
+        for i in indices:
             slide = outline.slides[i]
             fc = slide.flowchart.model_dump()
             if not fc.get("steps"):
@@ -1427,7 +1387,7 @@ Topic hint: {topic_hint}
                 )
             steps = [str(s).strip() for s in fc.get("steps", []) if str(s).strip()]
             if len(steps) < 3:
-                return i, None
+                continue
             structure = fc.get("structure", self.cfg.flowchart_structure) or self.cfg.flowchart_structure
             dot = build_graphviz(steps, structure=structure)
             dot_path = flow_dir / f"slide_{i+1:02d}.dot"
@@ -1437,16 +1397,8 @@ Topic hint: {topic_hint}
                 render_graphviz(dot_path, png_path)
             except Exception:
                 logger.exception("Failed to render flowchart for slide %s", i + 1)
-                return i, None
-            return i, str(png_path)
-
-        max_workers = min(self.cfg.max_llm_workers, len(indices))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_build_one, i): i for i in indices}
-            for fut in as_completed(futures):
-                i, path = fut.result()
-                if path:
-                    outline.slides[i].flowchart_images.append(path)
+                continue
+            slide.flowchart_images.append(str(png_path))
 
     def build_outline_with_approval(self, max_rounds: int = 3) -> Tuple[DeckOutline, Dict[str, Any]]:
         progress = self._load_progress()
@@ -1541,39 +1493,27 @@ Topic hint: {topic_hint}
             )
             titles_obj = revised
 
-            slides = [None] * len(titles_obj["slide_titles"])
-
-            def _make_one(i: int, t: str) -> tuple[int, dict]:
-                s = self.outline_builder.make_slide(
-                    meta,
-                    t,
-                    merged_summary,
-                    i,
-                    feedback=feedback,
-                    include_speaker_notes=self.cfg.include_speaker_notes,
-                    user_query=self.cfg.user_query,
-                    web_context=web_context,
-                    sources_block=sources_block,
+            slides = []
+            for idx, title in tqdm(
+                list(enumerate(titles_obj["slide_titles"], 1)),
+                desc="Slides",
+                unit="slide",
+                ncols=TQDM_NCOLS,
+                dynamic_ncols=False,
+            ):
+                slides.append(
+                    self.outline_builder.make_slide(
+                        meta,
+                        title,
+                        merged_summary,
+                        idx,
+                        feedback=feedback,
+                        include_speaker_notes=self.cfg.include_speaker_notes,
+                        user_query=self.cfg.user_query,
+                        web_context=web_context,
+                        sources_block=sources_block,
+                    )
                 )
-                return i, s
-
-            max_workers = min(self.cfg.max_llm_workers, len(titles_obj["slide_titles"]))
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {
-                    pool.submit(_make_one, idx, title): idx
-                    for idx, title in enumerate(titles_obj["slide_titles"], 1)
-                }
-                with tqdm(
-                    total=len(titles_obj["slide_titles"]),
-                    desc="Slides",
-                    unit="slide",
-                    ncols=TQDM_NCOLS,
-                    dynamic_ncols=False,
-                ) as bar:
-                    for fut in as_completed(futures):
-                        idx, slide = fut.result()
-                        slides[idx - 1] = slide
-                        bar.update(1)
 
             citations = list(citations_base)
 
@@ -1592,6 +1532,7 @@ Topic hint: {topic_hint}
 
     def run(self) -> Tuple[DeckOutline, Optional[Path], Optional[Path]]:
         self.sanity_checks()
+        self.prepare_topic_sources()
         outline, _meta = self.build_outline_with_approval(max_rounds=3)
 
         if self.cfg.interactive:

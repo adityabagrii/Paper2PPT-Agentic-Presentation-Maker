@@ -207,6 +207,12 @@ You can start from a topic instead of providing sources. Paper2ppt will:
 - Download available PDFs (arXiv and direct PDF links)
 - Build a presentation that answers the topic query
 
+In this mode, the system behaves like a lightweight research agent:
+- It rewrites your topic into a focused query (with sub-questions and keywords).
+- It gathers a small set of credible sources (optionally restricted to scholarly domains).
+- It extracts full text, summarizes, and synthesizes a coherent narrative.
+- It then builds slides that start from fundamentals and progress to deep technical content, results, limitations, and future directions.
+
 Example:
 ```bash
 paper2ppt --topic "Key frame selection in long video understanding" --slides 15 --bullets 4 --generate-flowcharts
@@ -251,6 +257,17 @@ Render Beamer LaTeX -> Compile PDF
 - Use `--max-web-pdfs` to cap downloads for speed.
 - Topic mode stores the expanded query in `outputs/topic.txt` and uses it as the deck’s guiding question.
 - Use `--topic-scholarly-only` to reduce noise and keep sources to reputable venues.
+
+### What Happens Under the Hood (Topic Mode)
+1. **Topic expansion (LLM):** Your topic is expanded into a research-grade query with key sub-questions and keywords.
+2. **Source discovery:** Web search collects candidate sources; optional scholarly-only filtering keeps arXiv/CVPR/ICML/NeurIPS/Scholar.
+3. **Source acquisition:** arXiv links are downloaded as LaTeX sources; PDFs are fetched into `work/web_pdfs/`.
+4. **Text extraction:** LaTeX is flattened; PDFs are parsed into text (plus image references).
+5. **Summarization:** The corpus is chunked and summarized, then merged.
+6. **Narrative planning:** Slide titles are generated to cover motivation → methods → results → limitations → future work.
+7. **Slide generation:** Each slide is generated with bullets, speaker notes, and flowchart suggestions.
+8. **Flowcharts (optional):** Graphviz diagrams are rendered for mechanism-heavy slides.
+9. **Render & compile:** Beamer LaTeX is written and compiled to PDF (if `pdflatex` is available).
 
 ## Multi-PDF and Multi-Source Workflow
 When you provide multiple arXiv IDs and/or multiple PDFs, Paper2ppt:
@@ -348,7 +365,6 @@ Notes on structure:
 - `-gi`, `--generate-images` alias for `--generate-flowcharts`
 - `--min-flowcharts` minimum flowcharts per deck (default `3`)
 - `--max-flowcharts` maximum flowcharts per deck (default `4`)
-- `--max-llm-workers` max parallel LLM calls (default `4`)
 - `--root-dir` root directory for all runs (default `$PAPER2PPT_ROOT_DIR` or `~/paper2ppt_runs`)
 - `-wdir`, `--work-dir` working directory (overrides `--root-dir`)
 - `-odir`, `--out-dir` output directory (overrides `--root-dir`)
@@ -403,7 +419,7 @@ Extract + flatten text per source
   |
   v
 Chunk + summarize (LLM)
-  - Multi-source: parallel chunk summarization
+  - Multi-source: chunk summarization
   |
   v
 Generate slide titles (LLM)
@@ -452,7 +468,6 @@ See `CHANGELOG.md` for version history and changes.
 
 ### Optimization Updates (Summary)
 - 0.5.5: GUI caches LLM client, de-duplicates uploads/downloads, and uses saved default root for faster setup.
-- 0.5.4: Multi-source chunk summaries run in parallel for lower latency.
 - 0.4.4: Slide generation retries avoid hard failures when JSON is malformed.
 - 0.4.2: Logging falls back to temp/console on filesystem timeouts.
 
