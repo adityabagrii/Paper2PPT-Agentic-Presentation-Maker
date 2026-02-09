@@ -10,6 +10,9 @@
 - Added source approval flow and slide-title approval with optional slide-count adjustment.
 - Prefer arXiv source downloads with PDF fallback after 2 failed attempts.
 - Reduced noisy HTTP logs (HF hub/requests/httpx) and added progress bars where needed.
+- Added LLM-query web search for `--query` runs with configurable `--max-web-queries`.
+- Added web-source approval gate after query search.
+- Added post-run revision tools: `--revise-with-figures`, `--revise-with-diagrams`, and `--edit-run`.
 
 ## 0.7.2 - 2026-02-08
 - Added non-slide modes: `--read`, `--viva-mode`, `--describe-experiments`, `--exam-prep`, `--implementation-notes`.

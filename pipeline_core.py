@@ -305,8 +305,9 @@ User feedback: {ans}
         core_terms = list(dict.fromkeys(core_terms))[:6]  # keep it tight
         core_terms_text = ", ".join(core_terms) if core_terms else self.cfg.topic
 
+        target_n = max(1, self.cfg.max_web_queries)
         query_prompt = f"""
-Generate 8-12 diverse web search queries (short keyword phrases) that stay strictly
+Generate exactly {target_n} diverse web search queries (short keyword phrases) that stay strictly
 within this domain. Each query MUST include at least 2-3 of these core topic terms:
 {core_terms_text}
 
@@ -376,6 +377,7 @@ Topic: {self.cfg.topic}
             time.sleep(0.75 * attempt)
 
         if query_list:
+            query_list = query_list[:target_n]
             console = _get_console()
             if console and Panel:
                 body = "\n".join([f"{i}. {q}" for i, q in enumerate(query_list, 1)])
@@ -1050,7 +1052,9 @@ Topic hint: {topic_hint}
         for arxiv_id in self.cfg.arxiv_ids:
             try:
                 arxiv_work = self.cfg.work_dir / f"arxiv_{arxiv_id}"
-                src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
+                src_dir = arxiv_work / "arxiv_source"
+                if not src_dir.exists():
+                    src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
                 main_tex = find_main_tex_file(src_dir)
                 flat = flatten_tex(main_tex, max_files=120)
                 fig_assets.extend(self.figure_planner.extract_figures(flat, src_dir))
@@ -1269,41 +1273,43 @@ Slide titles: {[s.title for s in outline.slides]}
             experiment_refs = self.outline_builder._experiment_slide_refs(
                 titles_obj.get("slide_titles", [])
             )
-            # Continue generating remaining slides
-            for idx, title in enumerate(titles_obj.get("slide_titles", []), 1):
-                if idx <= len(slides):
-                    continue
-                self.outline_builder._checkpoint("Slides", idx, self.cfg.slide_count)
-                slides.append(
-                    self.outline_builder.make_slide(
-                        meta,
-                        title,
-                        merged_summary,
-                        idx,
-                        include_speaker_notes=self.cfg.include_speaker_notes,
-                        user_query=self.cfg.user_query,
-                        web_context=web_context,
-                        sources_block=sources_block,
-                        experiment_refs=experiment_refs,
+            # Continue generating remaining slides (resume with progress bar)
+            slide_items = list(enumerate(titles_obj.get("slide_titles", []), 1))
+            with tqdm(slide_items, desc="Slides (resume)", unit="slide", ncols=TQDM_NCOLS) as bar:
+                for idx, title in bar:
+                    if idx <= len(slides):
+                        continue
+                    self.outline_builder._checkpoint("Slides", idx, self.cfg.slide_count)
+                    slides.append(
+                        self.outline_builder.make_slide(
+                            meta,
+                            title,
+                            merged_summary,
+                            idx,
+                            include_speaker_notes=self.cfg.include_speaker_notes,
+                            user_query=self.cfg.user_query,
+                            web_context=web_context,
+                            sources_block=sources_block,
+                            experiment_refs=experiment_refs,
+                        )
                     )
-                )
-                self.outline_builder._save_progress(
-                    {
-                        "stage": "slides",
-                        "meta": meta,
-                        "merged_summary": merged_summary,
-                        "titles_obj": titles_obj,
-                        "web_context": web_context,
-                        "sources_block": sources_block,
-                        "source_label": source_label,
-                        "citations": citations_base,
-                        "diagram_plan": diagram_plan,
-                        "slides": slides,
-                        "work_dir": str(self.cfg.work_dir),
-                        "out_dir": str(self.cfg.out_dir),
-                        "global_feedback": global_feedback,
-                    }
-                )
+                    self.outline_builder._save_progress(
+                        {
+                            "stage": "slides",
+                            "meta": meta,
+                            "merged_summary": merged_summary,
+                            "titles_obj": titles_obj,
+                            "web_context": web_context,
+                            "sources_block": sources_block,
+                            "source_label": source_label,
+                            "citations": citations_base,
+                            "diagram_plan": diagram_plan,
+                            "slides": slides,
+                            "work_dir": str(self.cfg.work_dir),
+                            "out_dir": str(self.cfg.out_dir),
+                            "global_feedback": global_feedback,
+                        }
+                    )
 
             outline_dict = {
                 "deck_title": titles_obj.get("deck_title", "Resume"),
@@ -1949,6 +1955,100 @@ Sources:
             )
         return rendered
 
+    def generate_section_diagrams(self, ctx: PaperContext, sections: List[str], prefix: str) -> List[dict]:
+        """Generate and render diagrams for arbitrary note sections."""
+        if not sections:
+            return []
+        sec_list = " | ".join(sections)
+        prompt = f"""
+Return ONLY JSON.
+
+Schema:
+{{
+  "diagrams": [
+    {{
+      "section": "{sec_list}",
+      "type": "comparison|taxonomy|pipeline|problem_solution|flowchart",
+      "title": "string",
+      "nodes": ["string", "..."],
+      "edges": [["from","to","label"], "..."],
+      "caption": "string"
+    }}
+  ]
+}}
+
+Rules:
+- Provide 4-6 diagrams total.
+- Keep nodes short (2-6 words).
+- Use 6-10 nodes per diagram.
+- Use edges to encode relationships (label can be empty).
+- Ensure each listed section has at least one diagram assigned via 'section'.
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:3000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+        raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        js = OutlineBuilder.try_extract_json(raw)
+        if js is None:
+            fix = safe_invoke(
+                logger,
+                self.llm,
+                "Return ONLY valid JSON for the schema. Fix this:\n" + raw[:1800],
+                retries=6,
+            )
+            js = OutlineBuilder.try_extract_json(fix)
+        if js is None:
+            return []
+        try:
+            obj = json.loads(js)
+        except Exception:
+            return []
+
+        diagrams = obj.get("diagrams", [])
+        if not isinstance(diagrams, list) or not diagrams:
+            return []
+
+        flow_dir = self.cfg.out_dir / "flowcharts"
+        flow_dir.mkdir(parents=True, exist_ok=True)
+        rendered: List[dict] = []
+        for i, d in enumerate(diagrams[:6], 1):
+            nodes = [str(n).strip() for n in d.get("nodes", []) if str(n).strip()]
+            if len(nodes) < 3:
+                continue
+            edges_raw = d.get("edges", [])
+            edges = []
+            if isinstance(edges_raw, list):
+                for e in edges_raw:
+                    if isinstance(e, list) and len(e) >= 2:
+                        a = str(e[0]).strip()
+                        b = str(e[1]).strip()
+                        lbl = str(e[2]).strip() if len(e) > 2 else ""
+                        if a and b:
+                            edges.append((a, b, lbl))
+            title = str(d.get("title", "")).strip()
+            dtype = str(d.get("type", "pipeline")).strip().lower()
+            rankdir = "LR" if dtype in {"pipeline", "flowchart"} else "TB"
+            dot = build_graphviz_from_nodes_edges(nodes, edges, title=title, rankdir=rankdir)
+            dot_path = flow_dir / f"{prefix}_diagram_{i:02d}.dot"
+            png_path = flow_dir / f"{prefix}_diagram_{i:02d}.png"
+            dot_path.write_text(dot, encoding="utf-8")
+            try:
+                render_graphviz(dot_path, png_path)
+            except Exception:
+                logger.exception("Failed to render %s diagram %s", prefix, i)
+                continue
+            rendered.append(
+                {
+                    "png": str(png_path.relative_to(self.cfg.out_dir)),
+                    "caption": title or d.get("caption", ""),
+                    "section": str(d.get("section", "")).strip(),
+                }
+            )
+        return rendered
+
     @staticmethod
     def _insert_section_diagrams(md: str, diagrams: List[dict]) -> str:
         if not md or not diagrams:
@@ -2006,26 +2106,75 @@ Sources:
         return "\n".join(out_lines).strip()
 
     def generate_experiment_description(self, ctx: PaperContext) -> Path:
-        prompt = f"""
-Generate a clear experiment description in markdown with sections:
+        sections = [
+            "Dataset Description",
+            "Baselines",
+            "Metrics",
+            "Protocol",
+            "Reported Results (Table)",
+        ]
 
-## Dataset Description
-## Baselines
-## Metrics
-## Protocol
+        def _has_markdown_table(text: str) -> bool:
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            for i in range(len(lines) - 1):
+                if lines[i].startswith("|") and "|" in lines[i]:
+                    sep = lines[i + 1]
+                    if sep.startswith("|") and set(sep.replace("|", "").replace(" ", "").replace(":", "").replace("-", "")) == set():
+                        return True
+            return False
+
+        def _gen_section(sec: str) -> str:
+            prompt = f"""
+Write the **{sec}** section in markdown.
 
 Rules:
-- Be precise and structured.
-- Only use what is supported by the provided context.
+- Be precise and structured; go beyond an overview.
+- Include dataset names, splits, and task definitions when available.
+- If details are missing, explicitly label them as missing.
+- Only write content for this section (no other headings).
+{(" - For Reported Results, include a markdown table with columns: Dataset | Split | Metric | Value | Notes. Use \"Not reported\" when missing." if "Reported Results" in sec else "")}
 
 Title: {ctx.meta.get('title', '')}
 Abstract: {ctx.meta.get('abstract', '')}
-Summary: {ctx.merged_summary[:4000]}
+Summary: {ctx.merged_summary[:5000]}
 Sources:
 {ctx.sources_block}
-""".strip()
-        raw = safe_invoke(logger, self.llm, prompt, retries=6)
-        return self._write_markdown("experiment_description.md", raw)
+            """.strip()
+            body = self._strip_code_fences(safe_invoke(logger, self.llm, prompt, retries=6)).strip()
+            if "Reported Results" in sec:
+                # Ensure a markdown table exists (robust check)
+                if not _has_markdown_table(body):
+                    logger.warning("Reported Results section missing table; inserting template.")
+                    body += (
+                        "\n\n| Dataset | Split | Metric | Value | Notes |\n"
+                        "|---|---|---|---|---|\n"
+                        "| Not reported | Not reported | Not reported | Not reported | Not reported |\n"
+                    )
+            return body
+
+        pieces = []
+        with tqdm(sections, desc="Experiment notes", unit="section", ncols=TQDM_NCOLS, dynamic_ncols=False) as bar:
+            for sec in bar:
+                bar.set_postfix_str(f"section: {sec}")
+                logger.info("Generating experiment section: %s", sec)
+                body = _gen_section(sec)
+                pieces.append(f"## {sec}\n{body}\n")
+
+        path = self._write_markdown("experiment_description.md", "\n".join(pieces).strip())
+        if self.cfg.generate_flowcharts:
+            try:
+                diagrams = self.generate_section_diagrams(
+                    ctx,
+                    ["Dataset Description", "Baselines", "Metrics", "Protocol", "Reported Results (Table)"],
+                    "experiment",
+                )
+                if diagrams:
+                    md = path.read_text(encoding="utf-8").rstrip()
+                    md = self._insert_section_diagrams(md, diagrams)
+                    path.write_text(md.strip() + "\n", encoding="utf-8")
+            except Exception:
+                logger.exception("Experiment diagram generation failed; continuing without diagrams.")
+        return path
 
     def generate_exam_prep(self, ctx: PaperContext) -> Path:
         prompt = f"""
@@ -2057,42 +2206,23 @@ Sources:
         return self._write_markdown("exam_prep.md", raw)
 
     def generate_implementation_notes(self, ctx: PaperContext) -> Path:
-        prompt = f"""
-Generate implementation notes in markdown with sections:
+        sections = [
+            "Model Components",
+            "Architecture Details",
+            "Training Loop Sketch",
+            "Loss Functions",
+            "Gotchas",
+        ]
 
-## Model Components
-## Training Loop Sketch
-## Loss Functions
-## Gotchas
-
-Rules:
-- Be practical and specific.
-- Include caveats when details are missing.
-
-Title: {ctx.meta.get('title', '')}
-Abstract: {ctx.meta.get('abstract', '')}
-Summary: {ctx.merged_summary[:4000]}
-Sources:
-{ctx.sources_block}
-""".strip()
-        raw = safe_invoke(logger, self.llm, prompt, retries=6)
-        return self._write_markdown("implementation_notes.md", raw)
-
-    def generate_reproduction_checklist(self, ctx: PaperContext) -> Path:
-        prompt = f"""
-You are producing a reproduction checklist for a research paper. Return structured markdown with these sections:
-
-## Key Hyperparameters
-## Missing Details / Ambiguities
-## Required Compute
-## Likely Traps / Failure Modes
-## Step-by-Step Reproduction Checklist
+        def _gen_section(sec: str) -> str:
+            prompt = f"""
+Write the **{sec}** section in markdown.
 
 Rules:
-- Use bullets in every section.
-- Be concrete, specific, and cautious about assumptions.
-- If a detail is missing from the sources, explicitly label it as missing.
-- Avoid code fences.
+- Be practical, specific, and in-depth (not a high-level overview).
+- Describe modules, data flow, and key operations with enough detail to reimplement.
+- Include caveats when details are missing and label them explicitly.
+- Only write content for this section (no other headings).
 
 Title: {ctx.meta.get('title', '')}
 Abstract: {ctx.meta.get('abstract', '')}
@@ -2100,8 +2230,85 @@ Summary: {ctx.merged_summary[:5000]}
 Sources:
 {ctx.sources_block}
 """.strip()
-        raw = safe_invoke(logger, self.llm, prompt, retries=6)
-        return self._write_markdown("reproduction_checklist.md", raw)
+            return self._strip_code_fences(safe_invoke(logger, self.llm, prompt, retries=6)).strip()
+
+        pieces = []
+        with tqdm(sections, desc="Implementation notes", unit="section", ncols=TQDM_NCOLS, dynamic_ncols=False) as bar:
+            for sec in bar:
+                bar.set_postfix_str(f"section: {sec}")
+                logger.info("Generating implementation section: %s", sec)
+                body = _gen_section(sec)
+                pieces.append(f"## {sec}\n{body}\n")
+
+        path = self._write_markdown("implementation_notes.md", "\n".join(pieces).strip())
+        if self.cfg.generate_flowcharts:
+            try:
+                diagrams = self.generate_section_diagrams(
+                    ctx,
+                    ["Model Components", "Architecture Details", "Training Loop Sketch", "Loss Functions", "Gotchas"],
+                    "implementation",
+                )
+                if diagrams:
+                    md = path.read_text(encoding="utf-8").rstrip()
+                    md = self._insert_section_diagrams(md, diagrams)
+                    path.write_text(md.strip() + "\n", encoding="utf-8")
+            except Exception:
+                logger.exception("Implementation diagram generation failed; continuing without diagrams.")
+        return path
+
+    def generate_reproduction_checklist(self, ctx: PaperContext) -> Path:
+        sections = [
+            "Key Hyperparameters",
+            "Training Setup",
+            "Missing Details / Ambiguities",
+            "Required Compute",
+            "Likely Traps / Failure Modes",
+            "Step-by-Step Reproduction Checklist",
+        ]
+
+        def _gen_section(sec: str) -> str:
+            prompt = f"""
+Write the **{sec}** section in markdown.
+
+Rules:
+- Use bullets in this section.
+- Include **training hyperparameters** (optimizer, lr, batch size, epochs, schedulers, augmentations) if available.
+- Be concrete, specific, and cautious about assumptions.
+- If a detail is missing from the sources, explicitly label it as missing.
+- Avoid code fences.
+- Only write content for this section (no other headings).
+
+Title: {ctx.meta.get('title', '')}
+Abstract: {ctx.meta.get('abstract', '')}
+Summary: {ctx.merged_summary[:5000]}
+Sources:
+{ctx.sources_block}
+""".strip()
+            return self._strip_code_fences(safe_invoke(logger, self.llm, prompt, retries=6)).strip()
+
+        pieces = []
+        with tqdm(sections, desc="Repro checklist", unit="section", ncols=TQDM_NCOLS, dynamic_ncols=False) as bar:
+            for sec in bar:
+                bar.set_postfix_str(f"section: {sec}")
+                logger.info("Generating checklist section: %s", sec)
+                body = _gen_section(sec)
+                pieces.append(f"## {sec}\n{body}\n")
+
+        path = self._write_markdown("reproduction_checklist.md", "\n".join(pieces).strip())
+        if self.cfg.generate_flowcharts:
+            try:
+                diagrams = self.generate_section_diagrams(
+                    ctx,
+                    ["Key Hyperparameters", "Training Setup", "Missing Details / Ambiguities", "Required Compute", "Likely Traps / Failure Modes", "Step-by-Step Reproduction Checklist"],
+                    "repro",
+                )
+                if diagrams:
+                    md = path.read_text(encoding="utf-8").rstrip()
+                    md = self._insert_section_diagrams(md, diagrams)
+                    path.write_text(md.strip() + "\n", encoding="utf-8")
+            except Exception:
+                logger.exception("Repro diagram generation failed; continuing without diagrams.")
+        return path
 
     def index_paper(self, ctx: PaperContext) -> dict:
         prompt = f"""
@@ -2201,7 +2408,14 @@ Entries:
         self.prepare_topic_sources()
         logger.info("Starting non-slide mode...")
         ctx = None
-        if self.cfg.resume_path and self.cfg.read_mode:
+        if self.cfg.resume_path and (
+            self.cfg.read_mode
+            or self.cfg.viva_mode
+            or self.cfg.describe_experiments
+            or self.cfg.exam_prep
+            or self.cfg.implementation_notes
+            or self.cfg.reproduction_checklist
+        ):
             # Prefer paper_context.json if present
             resume_out = self.cfg.resume_path
             if resume_out.name != "outputs":
@@ -2252,7 +2466,7 @@ Entries:
                         )
             if ctx is not None and not ctx.merged_summary:
                 raise RuntimeError(
-                    "Resume requested for read mode but no merged_summary found. "
+                    "Resume requested for non-slide mode but no merged_summary found. "
                     "Re-run without --resume to regenerate summary, or ensure paper_context.json exists."
                 )
             if ctx is None:
@@ -2544,3 +2758,252 @@ Question: {q}
             outputs.append(fig_md)
 
         return outputs
+
+    def revise_with_figures(self, run_dir: Path) -> tuple[Path, Optional[Path]]:
+        """Revise an existing run by attaching figures from LaTeX sources.
+
+        Args:
+            run_dir (Path): Run directory containing work/ and outputs/
+
+        Returns:
+            (tex_path, pdf_path)
+        """
+        base_dir = Path(run_dir).expanduser().resolve()
+        if base_dir.name in {"outputs", "work"}:
+            base_dir = base_dir.parent
+        work_dir = base_dir / "work"
+        out_dir = base_dir / "outputs"
+        if not out_dir.exists():
+            raise RuntimeError(f"outputs/ not found under: {base_dir}")
+        if not work_dir.exists():
+            raise RuntimeError(f"work/ not found under: {base_dir}")
+
+        outline_path = None
+        outlines = sorted(out_dir.glob("outline-*.json"), key=lambda p: p.stat().st_mtime)
+        if outlines:
+            outline_path = outlines[-1]
+        else:
+            raise RuntimeError("No outline-*.json found in outputs/ to revise.")
+
+        outline_dict = json.loads(outline_path.read_text(encoding="utf-8"))
+        outline = DeckOutline.model_validate(outline_dict)
+
+        # Infer arXiv IDs from work dir
+        arxiv_ids: List[str] = []
+        for p in work_dir.glob("arxiv_*"):
+            if p.is_dir():
+                arxiv_id = p.name.replace("arxiv_", "", 1)
+                if arxiv_id and arxiv_id != "source":
+                    arxiv_ids.append(arxiv_id)
+        if not arxiv_ids:
+            logger.warning("No arXiv sources found under work/. Figures may not be attachable.")
+        else:
+            logger.info("Revising with figures from arXiv IDs: %s", ", ".join(arxiv_ids))
+
+        # Temporarily override cfg paths and arxiv_ids for figure attachment
+        orig_work = self.cfg.work_dir
+        orig_out = self.cfg.out_dir
+        orig_arxiv = list(self.cfg.arxiv_ids)
+        try:
+            self.cfg.work_dir = work_dir
+            self.cfg.out_dir = out_dir
+            self.cfg.arxiv_ids = arxiv_ids
+            self._attach_figures_from_arxiv_sources(outline)
+        finally:
+            self.cfg.work_dir = orig_work
+            self.cfg.out_dir = orig_out
+            self.cfg.arxiv_ids = orig_arxiv
+
+        # Save revised outline
+        revised_path = out_dir / "outline-figures.json"
+        revised_path.write_text(json.dumps(outline.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
+
+        tex_path, pdf_path = self.renderer.render(outline, out_dir)
+        return tex_path, pdf_path
+
+    def revise_with_diagrams(
+        self, run_dir: Path
+    ) -> tuple[Optional[Path], Optional[Path], Optional[Path]]:
+        """Revise an existing run by generating and attaching diagrams.
+
+        Returns:
+            (tex_path, pdf_path, notes_path)
+        """
+        base_dir = Path(run_dir).expanduser().resolve()
+        if base_dir.name in {"outputs", "work"}:
+            base_dir = base_dir.parent
+        work_dir = base_dir / "work"
+        out_dir = base_dir / "outputs"
+        if not out_dir.exists():
+            raise RuntimeError(f"outputs/ not found under: {base_dir}")
+
+        outline_path = None
+        outlines = sorted(out_dir.glob("outline-*.json"), key=lambda p: p.stat().st_mtime)
+        if outlines:
+            outline_path = outlines[-1]
+
+        ctx = None
+        ctx_path = out_dir / "paper_context.json"
+        if ctx_path.exists():
+            obj = json.loads(ctx_path.read_text(encoding="utf-8"))
+            ctx = PaperContext(
+                meta=obj.get("meta", {}),
+                paper_text=obj.get("paper_text", ""),
+                merged_summary=obj.get("merged_summary", ""),
+                sources_block=obj.get("sources_block", ""),
+                source_label=obj.get("source_label", ""),
+                web_context=obj.get("web_context", ""),
+                citations=obj.get("citations", []),
+                sources=obj.get("sources", []),
+            )
+        else:
+            progress_path = out_dir / "progress.json"
+            if progress_path.exists():
+                obj = json.loads(progress_path.read_text(encoding="utf-8"))
+                ctx = PaperContext(
+                    meta=obj.get("meta", {}),
+                    paper_text=obj.get("paper_text", ""),
+                    merged_summary=obj.get("merged_summary", ""),
+                    sources_block=obj.get("sources_block", ""),
+                    source_label=obj.get("source_label", ""),
+                    web_context=obj.get("web_context", ""),
+                    citations=obj.get("citations", []),
+                    sources=obj.get("sources", []),
+                )
+
+        tex_path = None
+        pdf_path = None
+        notes_path = None
+
+        if outline_path:
+            outline_dict = json.loads(outline_path.read_text(encoding="utf-8"))
+            outline = DeckOutline.model_validate(outline_dict)
+
+            merged_summary = ctx.merged_summary if ctx else ""
+            if not merged_summary:
+                merged_summary = (ctx.paper_text if ctx else "")[:8000]
+
+            titles = [s.title if hasattr(s, "title") else s.get("title", "Slide") for s in outline.slides]
+            diagram_plan = self.outline_builder.propose_diagram_plan(
+                titles=titles,
+                merged_summary=merged_summary or "",
+                user_query=(self.cfg.user_query or ""),
+                web_context=(ctx.web_context if ctx else ""),
+                sources_block=(ctx.sources_block if ctx else ""),
+            )
+            self.outline_builder.diagram_plan = diagram_plan
+
+            if self.cfg.diagram_intent_aware:
+                self._render_planned_diagrams(outline, diagram_plan)
+            if self.cfg.generate_flowcharts:
+                self._render_flowcharts(outline)
+                self._generate_deck_diagrams(outline)
+
+            revised_path = out_dir / "outline-diagrams.json"
+            revised_path.write_text(json.dumps(outline.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
+            tex_path, pdf_path = self.renderer.render(outline, out_dir)
+        else:
+            notes_path = out_dir / "reading_notes.md"
+            if notes_path.exists() and ctx:
+                logger.info("Adding diagrams to existing reading notes...")
+                diagrams = self.generate_reading_diagrams(ctx)
+                if diagrams:
+                    md = notes_path.read_text(encoding="utf-8").rstrip()
+                    md = self._insert_section_diagrams(md, diagrams)
+                    notes_path.write_text(md.strip() + "\n", encoding="utf-8")
+            else:
+                logger.warning("No outline or reading notes found to revise.")
+
+        return tex_path, pdf_path, notes_path
+
+    def edit_run(self, run_dir: Path, instructions: str, target: str = "auto") -> List[Path]:
+        """Edit an existing run using instructions without recomputing sources.
+
+        Args:
+            run_dir (Path): Run directory containing work/ and outputs/
+            instructions (str): Edit instructions
+            target (str): auto|slides|reading|implementation|experiment|repro|viva|exam
+        """
+        base_dir = Path(run_dir).expanduser().resolve()
+        if base_dir.name in {"outputs", "work"}:
+            base_dir = base_dir.parent
+        out_dir = base_dir / "outputs"
+        if not out_dir.exists():
+            raise RuntimeError(f"outputs/ not found under: {base_dir}")
+
+        outputs: List[Path] = []
+
+        def _edit_markdown(src_path: Path, label: str) -> Path:
+            original = src_path.read_text(encoding="utf-8")
+            prompt = f"""
+You are editing an existing {label} document. Apply the user instructions carefully.
+Keep structure and headings unless the instructions require changes. Return FULL revised markdown.
+
+Instructions:
+{instructions}
+
+Document:
+{original}
+""".strip()
+            revised = self._strip_code_fences(safe_invoke(logger, self.llm, prompt, retries=6)).strip()
+            out_path = src_path.with_name(src_path.stem + "_edited.md")
+            out_path.write_text(revised + "\n", encoding="utf-8")
+            return out_path
+
+        outline_path = None
+        outlines = sorted(out_dir.glob("outline-*.json"), key=lambda p: p.stat().st_mtime)
+        if outlines:
+            outline_path = outlines[-1]
+
+        # If target is slides or auto with outline, edit outline JSON
+        if target in {"slides", "auto"} and outline_path:
+            outline_dict = json.loads(outline_path.read_text(encoding="utf-8"))
+            prompt = f"""
+Return ONLY JSON for the slide deck with the SAME schema as the input.
+Apply the user instructions. Preserve slide count unless instructions say otherwise.
+
+Instructions:
+{instructions}
+
+Deck JSON:
+{json.dumps(outline_dict, ensure_ascii=False)}
+""".strip()
+            raw = safe_invoke(logger, self.llm, prompt, retries=6)
+            js = self.outline_builder.try_extract_json(raw) or raw
+            revised_dict = json.loads(js)
+            outline = DeckOutline.model_validate(revised_dict)
+            revised_path = out_dir / "outline-edited.json"
+            revised_path.write_text(json.dumps(outline.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
+            outputs.append(revised_path)
+            tex_path, pdf_path = self.renderer.render(outline, out_dir)
+            outputs.append(tex_path)
+            if pdf_path:
+                outputs.append(pdf_path)
+            return outputs
+
+        # Fallback to document edits
+        doc_map = {
+            "reading": "reading_notes.md",
+            "implementation": "implementation_notes.md",
+            "experiment": "experiment_description.md",
+            "repro": "reproduction_checklist.md",
+            "viva": "viva_notes.md",
+            "exam": "exam_prep.md",
+        }
+        if target == "auto":
+            for key, fname in doc_map.items():
+                p = out_dir / fname
+                if p.exists():
+                    outputs.append(_edit_markdown(p, key))
+            if outputs:
+                return outputs
+            raise RuntimeError("No outline or known markdown outputs found to edit.")
+        else:
+            fname = doc_map.get(target)
+            if not fname:
+                raise RuntimeError(f"Unknown edit target: {target}")
+            p = out_dir / fname
+            if not p.exists():
+                raise RuntimeError(f"{fname} not found in outputs/")
+            outputs.append(_edit_markdown(p, target))
+            return outputs

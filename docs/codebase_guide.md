@@ -65,6 +65,7 @@ RunConfig fields:
 - `topic`: topic-only mode (collect sources from web).
 - `max_web_results`: max web results for topic mode.
 - `max_web_pdfs`: max PDFs downloaded in topic mode.
+- `max_web_queries`: number of LLM-generated web search queries per run.
 - `topic_scholarly_only`: restrict topic sources to scholarly domains.
 - `max_llm_workers`: max parallel LLM calls.
 - `diagram_style`: default diagram style.
@@ -76,6 +77,11 @@ RunConfig fields:
 - `auto_comparisons`: insert comparison-focused slides when enabled.
 - `baseline_framing`: encourage baseline framing in slides.
 - `quant_results`: generate quantitative results table.
+- `revise_with_figures_path`: post-run figure attachment.
+- `revise_with_diagrams_path`: post-run diagram attachment.
+- `edit_run_path`: edit an existing run without recompute.
+- `edit_instructions`: edit instructions for existing outputs.
+- `edit_target`: edit target selector.
 - `teaching_mode`: teaching slide mode with pause questions.
 - `read_mode`: reading notes (non-slide).
 - `viva_mode`: viva preparation notes (non-slide).
@@ -107,6 +113,10 @@ Main classes:
 - `FigurePlanner` (`pipeline_figures.py`): extract figures from TeX, ask LLM to match figures to slides, materialize chosen figures in `outputs/figures`.
 - `Renderer` (`pipeline_render.py`): render Beamer `.tex`, run `pdflatex`, return `.pdf`.
 - `Pipeline` (`pipeline_core.py`): orchestrates the full flow. Builds paper context, generates outlines, notes, diagrams, and outputs.
+- Post-run utilities in `Pipeline`:
+  - `edit_run(...)`: edit existing outputs without recomputing sources.
+  - `revise_with_figures(...)`: attach LaTeX figures to an existing deck.
+  - `revise_with_diagrams(...)`: regenerate and insert diagrams into an existing deck or notes.
 
 Core flow in `Pipeline.run()`:
 1. `sanity_checks()` validates inputs, paths, and LLM availability.

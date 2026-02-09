@@ -50,6 +50,7 @@ class RunConfig:
     topic: str
     max_web_results: int
     max_web_pdfs: int
+    max_web_queries: int
     topic_scholarly_only: bool
     max_llm_workers: int
     diagram_style: str
@@ -74,6 +75,11 @@ class RunConfig:
     cache_summary: bool
     chat_mode: bool
     figures_only: bool
+    revise_with_figures_path: Optional[Path]
+    revise_with_diagrams_path: Optional[Path]
+    edit_run_path: Optional[Path]
+    edit_instructions: str
+    edit_target: str
 
 
 @dataclass

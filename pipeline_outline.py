@@ -6,11 +6,25 @@ import logging
 import re
 import textwrap
 import math
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
+
+try:
+    from rich.panel import Panel
+    from rich.console import Console
+except Exception:
+    Panel = None
+    Console = None
+
+def _get_console() -> Optional["Console"]:
+    try:
+        return Console() if Console else None
+    except Exception:
+        return None
 
 try:
     from .llm import safe_invoke
@@ -1500,23 +1514,198 @@ Generate slide #{idx}: {slide_title}
         if self.cfg.user_query and self.cfg.web_search and not (self.cfg.topic or "").strip():
             logger.info("Running web search for query: %s", self.cfg.user_query)
             try:
-                if self.cfg.arxiv_only_search:
-                    import arxiv
+                # Build LLM-generated query list from user query
+                core_terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9\\-]+", self.cfg.user_query)
+                core_terms = [t.lower() for t in core_terms if len(t) > 2]
+                core_terms = list(dict.fromkeys(core_terms))[:6]
+                core_terms_text = ", ".join(core_terms) if core_terms else self.cfg.user_query
 
-                    search = arxiv.Search(query=self.cfg.user_query, max_results=5)
-                    web_sources = [
-                        {
-                            "title": r.title,
-                            "url": r.entry_id,
-                            "snippet": (r.summary or "")[:400],
-                        }
-                        for r in search.results()
-                    ]
+                target_n = max(1, self.cfg.max_web_queries)
+                query_prompt = f"""
+You are generating search queries for a research deep-dive (NOT general explanations).
+Generate exactly {target_n} diverse web search queries (short keyword phrases, 5–12 words each)
+that stay strictly within this domain.
+
+Hard constraints:
+- Each query MUST contain at least 2–3 distinct terms from the core terms list below.
+- Each query MUST include at least one "critical angle" token from CRITICAL_ANGLE_TOKENS.
+- Do NOT include quotes, questions, or full sentences. Output keyword-phrase style only.
+- Avoid duplicates / near-duplicates (change at least 2 key tokens).
+- Prefer academic/discovery phrasing: ablation, benchmark, error analysis, limitations, robustness.
+
+Core terms (use 2–3 per query):
+{core_terms_text}
+
+CRITICAL_ANGLE_TOKENS (use >=1 per query):
+["ablation", "baseline", "comparison", "failure case", "negative result", "robustness",
+ "bias", "generalization", "domain shift", "out-of-distribution", "error analysis",
+ "reproducibility", "implementation details", "hyperparameter sensitivity",
+ "compute cost", "efficiency", "data leakage", "artifact", "confounder", "evaluation protocol"]
+
+Coverage requirements across the whole set (ensure variety):
+- Methods / model families (at least {max(2, target_n//5)} queries)
+- Datasets / benchmarks (at least {max(2, target_n//5)} queries)
+- Metrics / evaluation protocols (at least {max(2, target_n//5)} queries)
+- Baselines + SOTA comparisons (at least {max(2, target_n//5)} queries)
+- Limitations / failure modes / critiques (at least {max(2, target_n//5)} queries)
+
+User query (domain anchor): {self.cfg.user_query}
+
+Return ONLY a JSON array of strings. No extra text.
+""".strip()
+
+                logger.info("Generating LLM search queries (target=%s)...", target_n)
+
+                def _parse_query_list(raw: str) -> List[str]:
+                    if not raw:
+                        return []
+                    cleaned = raw.strip()
+                    if cleaned.startswith("```"):
+                        cleaned = re.sub(r"^```[a-zA-Z0-9]*\\s*", "", cleaned)
+                        cleaned = re.sub(r"\\s*```$", "", cleaned)
+                        cleaned = cleaned.strip()
+                    try:
+                        import json as _json
+
+                        parsed = _json.loads(cleaned)
+                        if isinstance(parsed, list):
+                            return [str(x).strip() for x in parsed if str(x).strip()]
+                    except Exception:
+                        pass
+                    quoted = re.findall(r'"([^"]+)"', cleaned)
+                    if quoted:
+                        return [q.strip() for q in quoted if q.strip()]
+                    lines = [re.sub(r"^\\s*\\d+\\.?\\s*", "", l).strip() for l in cleaned.splitlines()]
+                    return [l for l in lines if l]
+
+                def _filter_queries(queries: List[str]) -> List[str]:
+                    if not queries or not core_terms:
+                        return queries
+                    filtered = []
+                    for q in queries:
+                        ql = q.lower()
+                        hits = sum(1 for t in core_terms if t in ql)
+                        if hits >= 1:
+                            filtered.append(q)
+                    return filtered or queries
+
+                query_list = []
+                raw_q = ""
+                for attempt in range(1, 4):
+                    raw_q = safe_invoke(logger, self.llm, query_prompt, retries=4).strip()
+                    logger.info("LLM raw query output (attempt %s): %s", attempt, raw_q)
+                    query_list = _filter_queries(_parse_query_list(raw_q))
+                    if query_list and len(query_list) >= target_n:
+                        break
+                    if query_list:
+                        logger.warning(
+                            "LLM returned %s/%s queries (attempt %s). Retrying.",
+                            len(query_list),
+                            target_n,
+                            attempt,
+                        )
+                    else:
+                        logger.warning("LLM query generation returned no usable list (attempt %s). Retrying.", attempt)
+                    time.sleep(0.75 * attempt)
+
+                if not query_list:
+                    logger.warning("LLM query generation failed; falling back to user query.")
+                    query_list = [self.cfg.user_query]
                 else:
-                    from web_utils import search_research_focused
+                    query_list = query_list[:target_n]
 
-                    web_sources = search_research_focused(self.cfg.user_query, max_results=5)
+                console = _get_console()
+                if console and Panel:
+                    body = "\n".join([f"{i}. {q}" for i, q in enumerate(query_list, 1)])
+                    console.print(Panel(body, title="QUERIES BY LLM", expand=False))
+                else:
+                    print("\n----------QUERIES BY LLM----------------")
+                    for i, q in enumerate(query_list, 1):
+                        print(f"{i}. {q}")
+                    print("----------------------------------------\n")
+
+                aggregated = []
+                fetch_limit = min(60, max(self.cfg.max_web_results * 3, self.cfg.max_web_results))
+                for q in query_list:
+                    q = str(q).strip()
+                    if not q:
+                        continue
+                    logger.info("Web search run (LLM query): %s", q)
+                    if self.cfg.arxiv_only_search:
+                        import arxiv
+
+                        search = arxiv.Search(query=q, max_results=fetch_limit)
+                        for r in search.results():
+                            aggregated.append(
+                                {
+                                    "title": r.title,
+                                    "url": r.entry_id,
+                                    "snippet": (r.summary or "")[:400],
+                                }
+                            )
+                    else:
+                        from web_utils import search_research_focused
+
+                        aggregated.extend(search_research_focused(q, max_results=self.cfg.max_web_results))
+
+                # de-dup
+                seen = set()
+                deduped = []
+                for r in aggregated:
+                    url = r.get("url", "")
+                    if not url or url in seen:
+                        continue
+                    seen.add(url)
+                    deduped.append(r)
+                web_sources = deduped[: self.cfg.max_web_results]
+                if web_sources:
+                    logger.info("Final web sources (pre-approval): %s", len(web_sources))
+                    for i, s in enumerate(web_sources, 1):
+                        logger.info("  %s. %s | %s", i, s.get("title", ""), s.get("url", ""))
+
+                    # Optional approval gate before summarization
+                    if self.cfg.approve:
+                        print("\nWeb sources:")
+                        for i, s in enumerate(web_sources, 1):
+                            print(f"{i}. {s['title']} - {s['url']}")
+                        ans = input(
+                            "Approve web sources? (y=go ahead, a=add sources, r=remove sources): "
+                        ).strip().lower()
+                        if ans in {"a", "add"}:
+                            add = input("Enter URLs to add (comma-separated): ").strip()
+                            if add:
+                                for part in add.replace(";", ",").split(","):
+                                    part = part.strip()
+                                    if not part:
+                                        continue
+                                    web_sources.append(
+                                        {
+                                            "title": part,
+                                            "url": part,
+                                            "snippet": "",
+                                        }
+                                    )
+                            return self.build_outline_once()
+                        if ans in {"r", "remove"}:
+                            to_remove = input(
+                                "Enter source indices to remove (comma-separated): "
+                            ).strip()
+                            remove_idx = set()
+                            for part in to_remove.replace(";", ",").split(","):
+                                part = part.strip()
+                                if not part:
+                                    continue
+                                try:
+                                    remove_idx.add(int(part))
+                                except Exception:
+                                    pass
+                            if remove_idx:
+                                web_sources = [
+                                    s for i, s in enumerate(web_sources, 1) if i not in remove_idx
+                                ]
+                            return self.build_outline_once()
             except Exception:
+                logger.exception("Web search failed during LLM-query generation.")
                 web_sources = []
         elif (self.cfg.topic or "").strip():
             logger.info("Skipping outline-stage web search (topic mode).")
@@ -1529,6 +1718,19 @@ Generate slide #{idx}: {slide_title}
                 for i, s in enumerate(web_sources, 1):
                     lines.append(f"{i}. {s['title']} - {s['url']}\n   {s['snippet']}")
                 web_context = "\n".join(lines)
+        if web_sources:
+            print("\nFinal web sources:")
+            for i, s in enumerate(web_sources, 1):
+                print(f"{i}. {s['title']} - {s['url']}")
+            print("")
+            lines = []
+            for i, s in enumerate(web_sources, 1):
+                lines.append(f"{i}. {s['title']} - {s['url']}\n   {s.get('snippet','')}")
+            web_context = "\n".join(lines)
+
+        if not web_sources and self.cfg.user_query and self.cfg.web_search and not (self.cfg.topic or "").strip():
+            logger.warning("No web sources found for query; continuing without web context.")
+
         self._save_progress(
             {
                 "stage": "sources",
@@ -1920,15 +2122,73 @@ Summary: {summary}
 {query_block}{web_block}{sources_block}{teaching_rule}
 """.strip()
 
-        raw = safe_invoke(logger, self.llm, prompt, retries=6)
-        js = self.try_extract_json(raw)
+        js = None
+        last_raw = ""
+        for attempt in range(1, 4):
+            raw = safe_invoke(logger, self.llm, prompt, retries=6)
+            last_raw = raw
+            js = self.try_extract_json(raw)
+            if js is not None:
+                break
+            logger.warning("Revised titles JSON extraction failed (attempt %s/3).", attempt)
+            fix = safe_invoke(
+                logger,
+                self.llm,
+                "Return ONLY valid JSON for the schema. Fix this:\n" + raw[:1800],
+                retries=6,
+            )
+            js = self.try_extract_json(fix)
+            if js is not None:
+                break
         if js is None:
-            logger.error("RAW HEAD: %s", raw[:400])
-            logger.error("RAW TAIL: %s", raw[-400:])
-            raise RuntimeError("Could not extract revised titles JSON.")
-        obj = json.loads(js)
+            logger.error("RAW HEAD: %s", last_raw[:400])
+            logger.error("RAW TAIL: %s", last_raw[-400:])
+            # Fallback: keep previous titles, pad/truncate as needed
+            base = prev_titles if prev_titles else [f"Slide {i+1}" for i in range(self.cfg.slide_count)]
+            if len(base) < self.cfg.slide_count:
+                base += [f"Slide {i+1}" for i in range(len(base), self.cfg.slide_count)]
+            obj = {
+                "deck_title": meta.get("title", "Presentation"),
+                "arxiv_id": source_label,
+                "slide_titles": base[: self.cfg.slide_count],
+            }
+            return obj
+        try:
+            obj = json.loads(js)
+        except Exception:
+            logger.warning("Revised titles JSON parse failed; falling back to previous titles.")
+            base = prev_titles if prev_titles else [f"Slide {i+1}" for i in range(self.cfg.slide_count)]
+            if len(base) < self.cfg.slide_count:
+                base += [f"Slide {i+1}" for i in range(len(base), self.cfg.slide_count)]
+            obj = {
+                "deck_title": meta.get("title", "Presentation"),
+                "arxiv_id": source_label,
+                "slide_titles": base[: self.cfg.slide_count],
+            }
+            return obj
         if len(obj.get("slide_titles", [])) != self.cfg.slide_count:
-            raise RuntimeError(f"slide_titles must have exactly {self.cfg.slide_count} entries")
+            fix_prompt = (
+                "Return ONLY valid JSON for the same schema. "
+                f"Ensure slide_titles has exactly {self.cfg.slide_count} items. "
+                "Keep deck_title and arxiv_id unchanged. "
+                "Here is the JSON to fix:\n"
+                + json.dumps(obj, ensure_ascii=False)
+            )
+            fixed = safe_invoke(logger, self.llm, fix_prompt, retries=6)
+            fixed_js = self.try_extract_json(fixed) or fixed
+            try:
+                obj = json.loads(fixed_js)
+            except Exception:
+                obj = None
+            if not obj or len(obj.get("slide_titles", [])) != self.cfg.slide_count:
+                base = obj.get("slide_titles", []) if obj else []
+                if len(base) < self.cfg.slide_count:
+                    base += [f"Slide {i+1}" for i in range(len(base), self.cfg.slide_count)]
+                obj = {
+                    "deck_title": meta.get("title", "Presentation"),
+                    "arxiv_id": source_label,
+                    "slide_titles": base[: self.cfg.slide_count],
+                }
         if self.cfg.teaching_mode:
             obj["slide_titles"] = self._ensure_pause_question_titles(obj.get("slide_titles", []))
         return obj

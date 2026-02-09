@@ -172,15 +172,33 @@ Available figures (filename: caption):
 {catalog}
 """.strip()
 
-        raw = safe_invoke(logger, llm, prompt, retries=6)
-        js = OutlineBuilder.try_extract_json(raw)
-        if js is None:
-            logger.warning("Figure plan JSON parse failed. Skipping figures.")
-            return {"slides": []}
-
-        try:
-            obj = json.loads(js)
-        except Exception:
+        raw = ""
+        js = None
+        obj = None
+        for attempt in range(1, 4):
+            raw = safe_invoke(logger, llm, prompt, retries=6)
+            js = OutlineBuilder.try_extract_json(raw) or raw
+            logger.info("Raw figure plan output (attempt %s): %s", attempt, js)
+            try:
+                obj = json.loads(js)
+                break
+            except Exception:
+                logger.warning("Figure plan JSON parse failed (attempt %s).", attempt)
+                fix_prompt = (
+                    "Return ONLY valid JSON for the same schema. "
+                    "Do not include code fences or extra text. "
+                    "Here is the JSON to fix:\n"
+                    + str(js)
+                )
+                raw = safe_invoke(logger, llm, fix_prompt, retries=4)
+                js = OutlineBuilder.try_extract_json(raw) or raw
+                try:
+                    obj = json.loads(js)
+                    break
+                except Exception:
+                    obj = None
+        if obj is None:
+            logger.warning("Figure plan JSON parse failed after retries. Skipping figures.")
             return {"slides": []}
 
         allowed = {Path(f.resolved_path).name for f in figs}

@@ -223,6 +223,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--topic", "-t", default="", help="Topic-only mode: research and generate from a topic")
     p.add_argument("--max-web-results", "-maxres", type=int, default=6, help="Max web results to consider in topic mode")
     p.add_argument("--max-web-pdfs", "-maxpdf", type=int, default=4, help="Max PDFs to download in topic mode")
+    p.add_argument("--max-web-queries", "-maxq", type=int, default=4, help="Max LLM-generated web search queries per run")
+    p.add_argument(
+        "--revise-with-figures",
+        default="",
+        help="Revise an existing run by attaching figures from LaTeX sources (expects run dir with work/ and outputs/)",
+    )
+    p.add_argument(
+        "--revise-with-diagrams",
+        default="",
+        help="Revise an existing run by generating/attaching diagrams (expects run dir with work/ and outputs/)",
+    )
+    p.add_argument(
+        "--edit-run",
+        default="",
+        help="Edit an existing run using instructions (expects run dir with work/ and outputs/)",
+    )
+    p.add_argument(
+        "--edit-instructions",
+        default="",
+        help="Instructions to edit an existing run (used with --edit-run)",
+    )
+    p.add_argument(
+        "--edit-target",
+        default="auto",
+        choices=["auto", "slides", "reading", "implementation", "experiment", "repro", "viva", "exam"],
+        help="Target to edit in existing run (default: auto)",
+    )
     p.add_argument(
         "--topic-scholarly-only", "-tso",
         action="store_true",
@@ -441,6 +468,9 @@ def main() -> int:
     mode_search = bool((args.search or "").strip())
     mode_purge_cache = bool(args.purge_cache)
     mode_chat = bool(args.chat)
+    mode_revise_figs = bool(args.revise_with_figures)
+    mode_revise_diags = bool(args.revise_with_diagrams)
+    mode_edit_run = bool(args.edit_run)
     non_slide_modes = any(
         [
             args.read,
@@ -466,7 +496,7 @@ def main() -> int:
     md_paths = _collect_markdowns(args.md or [], args.md_dir or [])
     pdf_urls = _split_list_args(args.pdf_url or [])
     if not args.resume:
-        if not mode_daily_brief and not mode_search and not mode_chat:
+        if not mode_daily_brief and not mode_search and not mode_chat and not mode_revise_figs and not mode_revise_diags and not mode_edit_run:
             if not arxiv_inputs and not pdf_paths and not md_paths and not pdf_urls and not (args.topic or "").strip():
                 logger.error("Provide sources or use --topic for topic-only mode.")
                 return 2
@@ -498,6 +528,12 @@ def main() -> int:
         paper_title = f"IndexSearch_{_query_summary(args.search)}"
     elif mode_chat:
         paper_title = f"Chat_{_slugify('paper')}"
+    elif mode_revise_figs:
+        paper_title = Path(args.revise_with_figures).expanduser().resolve().name or "ReviseFigures"
+    elif mode_revise_diags:
+        paper_title = Path(args.revise_with_diagrams).expanduser().resolve().name or "ReviseDiagrams"
+    elif mode_edit_run:
+        paper_title = Path(args.edit_run).expanduser().resolve().name or "EditRun"
 
     if args.resume:
         resume_path = Path(args.resume).expanduser().resolve()
@@ -565,6 +601,7 @@ def main() -> int:
         topic=(args.topic or "").strip(),
         max_web_results=max(1, args.max_web_results),
         max_web_pdfs=max(0, args.max_web_pdfs),
+        max_web_queries=max(1, args.max_web_queries),
         topic_scholarly_only=bool(args.topic_scholarly_only),
         titles_only=bool(args.titles_only),
         diagram_style=args.diagram_style,
@@ -589,12 +626,58 @@ def main() -> int:
         cache_summary=bool(args.cache_summary),
         chat_mode=bool(args.chat),
         figures_only=bool(args.figures_only),
+        revise_with_figures_path=Path(args.revise_with_figures).expanduser().resolve()
+        if args.revise_with_figures
+        else None,
+        revise_with_diagrams_path=Path(args.revise_with_diagrams).expanduser().resolve()
+        if args.revise_with_diagrams
+        else None,
+        edit_run_path=Path(args.edit_run).expanduser().resolve() if args.edit_run else None,
+        edit_instructions=(args.edit_instructions or "").strip(),
+        edit_target=(args.edit_target or "auto").strip(),
     )
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
     if cfg.user_query:
         (cfg.out_dir / "query.txt").write_text(cfg.user_query + "\n", encoding="utf-8")
     setup_logging(args.verbose, log_path=cfg.out_dir / "run.log")
+
+    if cfg.revise_with_figures_path:
+        logger.info("Initializing LLM...")
+        llm = init_llm(LLMConfig(model=cfg.llm_model, api_key=cfg.llm_api_key))
+        pipeline = Pipeline(cfg, llm)
+        tex_path, pdf_path = pipeline.revise_with_figures(cfg.revise_with_figures_path)
+        if tex_path:
+            print(f"[revise-with-figures] LaTeX: {tex_path}")
+        if pdf_path:
+            print(f"[revise-with-figures] PDF: {pdf_path}")
+        return 0
+
+    if cfg.revise_with_diagrams_path:
+        logger.info("Initializing LLM...")
+        llm = init_llm(LLMConfig(model=cfg.llm_model, api_key=cfg.llm_api_key))
+        pipeline = Pipeline(cfg, llm)
+        tex_path, pdf_path, notes_path = pipeline.revise_with_diagrams(cfg.revise_with_diagrams_path)
+        if tex_path:
+            print(f"[revise-with-diagrams] LaTeX: {tex_path}")
+        if pdf_path:
+            print(f"[revise-with-diagrams] PDF: {pdf_path}")
+        if notes_path:
+            print(f"[revise-with-diagrams] Notes: {notes_path}")
+        return 0
+
+    if cfg.edit_run_path:
+        if not cfg.edit_instructions:
+            logger.error("--edit-instructions is required when using --edit-run.")
+            return 2
+        logger.info("Initializing LLM...")
+        llm = init_llm(LLMConfig(model=cfg.llm_model, api_key=cfg.llm_api_key))
+        pipeline = Pipeline(cfg, llm)
+        outputs = pipeline.edit_run(cfg.edit_run_path, cfg.edit_instructions, cfg.edit_target)
+        print("\nEdited outputs:")
+        for p in outputs:
+            print(p)
+        return 0
 
     if mode_search:
         results = search_index(cfg.index_search_query, limit=10)
