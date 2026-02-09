@@ -636,6 +636,21 @@ ResearchOS/
 ## Changelog
 See `CHANGELOG.md` for full history. Latest entries:
 
+### 0.7.3 - 2026-02-09
+- Added research-focused multi-source web search with per-provider logging, dedupe, scoring, and caching/backoff.
+- Added `--arxiv-only-search` flag to force arXiv-only search.
+- Improved topic expansion and diversified query generation with topic-term anchoring.
+- Added LLM-based relevance filtering with arXiv metadata (title/abstract) and detailed keep/drop logs.
+- Added semantic chunk ranking via embeddings (fallback to keyword overlap) and capped chunk processing by `--max-summary-chunks`.
+- Improved read mode formatting and resume-from-outline support.
+- Added source approval flow and slide-title approval with optional slide-count adjustment.
+- Prefer arXiv source downloads with PDF fallback after 2 failed attempts.
+- Reduced noisy HTTP logs (HF hub/requests/httpx) and added progress bars where needed.
+- Added LLM-query web search for `--query` runs with configurable `--max-web-queries`.
+- Added web-source approval gate after query search.
+- Added post-run revision tools: `--revise-with-figures`, `--revise-with-diagrams`, and `--edit-run`.
+- Added targets for post-run figures/diagrams (`--revise-figures-target`, `--revise-diagrams-target`).
+
 ### 0.7.2 - 2026-02-08
 - Added non-slide modes: `--read`, `--viva-mode`, `--describe-experiments`, `--exam-prep`, `--implementation-notes`.
 - Added reproduction checklist mode: `--repro-checklist`.
@@ -653,51 +668,6 @@ See `CHANGELOG.md` for full history. Latest entries:
 
 ### 0.7.1 - 2026-02-07
 - Added `--topic-scholarly-only` to restrict topic mode to reputable sources.
-
-### 0.7.0 - 2026-02-07
-- Added topic-only research mode with web search and automatic PDF collection.
-- Topic is expanded into a focused research query (LLM) before search.
-- Downloads PDFs into `work/web_pdfs/` for topic runs.
-
-### 0.6.7 - 2026-02-07
-- Added `--titles-only` to stop after slide titles for faster runs.
-
-### 0.6.6 - 2026-02-07
-- Added robust slide title JSON extraction with retries and fallback placeholder titles.
-
-### 0.6.5 - 2026-02-07
-- Added NVIDIA Flux (black-forest-labs/flux.1-kontext-dev) image generation provider and set as default.
-
-### 0.6.4 - 2026-02-07
-- Added diagram/image generation from slide figure ideas with optional OpenAI provider.
-
-### 0.6.3 - 2026-02-07
-- Print chunk summary previews and slide titles for better terminal visibility.
-
-### 0.6.2 - 2026-02-07
-- Interactive handling for slide title count mismatches: show titles, accept feedback, then auto-fix.
-
-### 0.6.1 - 2026-02-07
-- Interactive checkpoints now accept user feedback for titles/slides and include it in prompts.
-- Added resume support from `progress.json` via `--resume`.
-
-### 0.6.0 - 2026-02-07
-- Added interactive checkpoints to allow users to abort at key stages.
-- Added `--check-interval` for interactive prompting cadence.
-
-### 0.5.9 - 2026-02-07
-- Added `--retry-empty` to control retries for empty LLM outputs.
-
-### 0.5.8 - 2026-02-07
-- Retry empty LLM outputs for chunk summaries and prompt user to skip or quit.
-
-### 0.5.7 - 2026-02-07
-- Added `--name` to set a custom run directory name.
-
-### 0.5.6 - 2026-02-07
-- Robust slide title generation: retry/fix and fallback padding when LLM returns the wrong count.
-
-### 0.5.5 - 2026-02-07
 - GUI: Save a default root directory from the sidebar.
 - GUI: Reuse cached LLM client between runs to reduce setup time.
 - GUI: De-duplicate uploads and URL downloads to avoid redundant work.
