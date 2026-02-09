@@ -5,6 +5,7 @@ import hashlib
 import logging
 import re
 import textwrap
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,9 +30,18 @@ except Exception:
 try:
     from .pipeline_arxiv import ArxivClient
     from .pipeline_common import RunConfig, logger, TQDM_NCOLS, _progress_path
+    from .arxiv_utils import get_arxiv_pdf_url
+    from .arxiv_utils import extract_arxiv_id
 except Exception:
     from pipeline_arxiv import ArxivClient
     from pipeline_common import RunConfig, logger, TQDM_NCOLS, _progress_path
+    from arxiv_utils import get_arxiv_pdf_url
+    from arxiv_utils import extract_arxiv_id
+
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception:
+    SentenceTransformer = None
 
 
 class OutlineBuilder:
@@ -50,6 +60,63 @@ class OutlineBuilder:
         self.cfg = cfg
         self.arxiv_client = arxiv_client
         self.diagram_plan: List[dict] = []
+
+    def _select_relevant_chunks(self, chunks: List[str], global_feedback: str = "") -> List[str]:
+        """Select top chunks aligned to the topic/query for summarization."""
+        if not chunks:
+            return chunks
+        N = min(len(chunks), self.cfg.max_summary_chunks)
+        if len(chunks) <= N:
+            return chunks[:N]
+
+        query_text = " ".join(
+            [
+                self.cfg.topic or "",
+                self.cfg.user_query or "",
+                global_feedback or "",
+            ]
+        ).strip()
+        scored: List[Tuple[float, int, str]] = []
+        if SentenceTransformer is not None and query_text:
+            try:
+                logger.info("Loading sentence piece transformer")
+                # Silence HF hub/transformers HTTP and progress noise.
+                import os
+                os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+                try:
+                    from huggingface_hub import logging as hf_logging
+                    hf_logging.set_verbosity_error()
+                except Exception:
+                    pass
+                try:
+                    from transformers import logging as tf_logging
+                    tf_logging.set_verbosity_error()
+                except Exception:
+                    pass
+                model = SentenceTransformer("all-MiniLM-L6-v2")
+                q_emb = model.encode([query_text], normalize_embeddings=True, show_progress_bar=False)[0]
+                c_embs = model.encode(chunks, normalize_embeddings=True, batch_size=32, show_progress_bar=False)
+                for idx, emb in enumerate(c_embs):
+                    score = float((q_emb * emb).sum())
+                    scored.append((score, idx, chunks[idx]))
+            except Exception:
+                scored = []
+        if not scored:
+            query_text_l = query_text.lower()
+            keywords = re.findall(r"[a-z0-9]{3,}", query_text_l)
+            keyset = set(keywords)
+            for idx, ch in enumerate(chunks):
+                words = re.findall(r"[a-z0-9]{3,}", ch.lower())
+                score = sum(1 for w in words if w in keyset)
+                scored.append((float(score), idx, ch))
+        scored.sort(key=lambda x: (x[0], -x[1]), reverse=True)
+        selected = [c for _, _, c in scored[:N]]
+        if selected:
+            logger.info("Shortlisted chunk examples:")
+            for i, ch in enumerate(selected[:3], 1):
+                preview = re.sub(r"\s+", " ", ch.strip())[:220]
+                logger.info("  %s. %s", i, preview)
+        return selected
 
     def _checkpoint(self, label: str, idx: int | None = None, total: int | None = None) -> None:
         """Function checkpoint.
@@ -519,12 +586,12 @@ Chunk:
                 return cached
 
         chunks = self.chunk_text(paper_text, 1500)
-        N = min(len(chunks), self.cfg.max_summary_chunks)
-        chunks = chunks[:N]
+        chunks = self._select_relevant_chunks(chunks, global_feedback=global_feedback)
+        N = len(chunks)
         sums = []
         prev_summary_preview = "..."
         if self.cfg.max_llm_workers > 1 and N > 1:
-            max_workers = min(2, self.cfg.max_llm_workers, N)
+            max_workers = min(self.cfg.max_llm_workers, N)
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
                 futures = {}
                 for i in range(1, N + 1):
@@ -643,7 +710,11 @@ Schema:
 
 Rules:
 - Exactly {self.cfg.slide_count} titles
-- Cover: motivation, problem, key idea, method, experiments, results, limitations, takeaways
+- Cover the full narrative arc from intro to conclusion. The sequence must clearly
+  progress: context/motivation → problem statement → prior work/baselines →
+  core idea → method details → experiments/setup → quantitative results →
+  qualitative analysis → limitations/risks → conclusions/future work.
+- Avoid vague, open-ended titles. Each title should be specific and scoped.
 - No extra keys
 - Deck title must reflect the user query and the source titles when provided
 {query_rule}
@@ -1172,15 +1243,43 @@ Generate slide #{idx}: {slide_title}
                     arxiv_work = self.cfg.work_dir / f"arxiv_{arxiv_id}"
                     src_dir = None
                     last_err = None
-                    for attempt in range(1, 4):
+                    for attempt in range(1, 3):
                         try:
                             src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
                             break
                         except Exception as e:
                             last_err = e
-                            logger.warning("arXiv source download failed (%s/%s) for %s", attempt, 3, arxiv_id)
+                            logger.warning("arXiv source download failed (%s/%s) for %s", attempt, 2, arxiv_id)
                     if src_dir is None:
-                        raise RuntimeError(f"Failed to download arXiv source for {arxiv_id}: {last_err}")
+                        logger.warning("Falling back to PDF for arXiv %s", arxiv_id)
+                        try:
+                            pdf_url = get_arxiv_pdf_url(arxiv_id)
+                            pdf_dir = self.cfg.work_dir / "web_pdfs"
+                            pdf_dir.mkdir(parents=True, exist_ok=True)
+                            name = Path(pdf_url.split("?")[0]).name or f"{arxiv_id}.pdf"
+                            if not name.lower().endswith(".pdf"):
+                                name = name + ".pdf"
+                            pdf_path = pdf_dir / name
+                            if not pdf_path.exists() or pdf_path.stat().st_size == 0:
+                                import requests
+
+                                r = requests.get(pdf_url, stream=True, timeout=60)
+                                r.raise_for_status()
+                                with pdf_path.open("wb") as f:
+                                    for chunk in r.iter_content(chunk_size=1024 * 256):
+                                        if chunk:
+                                            f.write(chunk)
+                            paper_text = extract_pdf_content(pdf_path)
+                            return {
+                                "type": "pdf",
+                                "id": str(pdf_path),
+                                "title": title,
+                                "url": pdf_url,
+                                "text": paper_text,
+                                "images": [],
+                            }
+                        except Exception as e:
+                            raise RuntimeError(f"Failed to download arXiv source for {arxiv_id}: {last_err}") from e
 
                     main_tex = None
                     last_err = None
@@ -1311,6 +1410,52 @@ Generate slide #{idx}: {slide_title}
                     print(f"- {s['title']} ({s['id']})")
             print("")
 
+        if self.cfg.approve:
+            print("\nSelected sources:")
+            for i, s in enumerate(sources, 1):
+                print(f"{i}. [{s['type']}] {s['title']} ({s['id']})")
+            ans = input(
+                "Approve sources? (y=go ahead, a=add sources, r=remove sources): "
+            ).strip().lower()
+            if ans in {"a", "add"}:
+                add = input(
+                    "Enter arXiv IDs/URLs to add (comma-separated): "
+                ).strip()
+                if add:
+                    for part in add.replace(";", ",").split(","):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        try:
+                            self.cfg.arxiv_ids.append(extract_arxiv_id(part))
+                        except Exception:
+                            self.cfg.arxiv_ids.append(part)
+                return self.build_outline_once()
+            if ans in {"r", "remove"}:
+                to_remove = input(
+                    "Enter source indices to remove (comma-separated): "
+                ).strip()
+                remove_idx = set()
+                for part in to_remove.replace(";", ",").split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    try:
+                        remove_idx.add(int(part))
+                    except Exception:
+                        pass
+                if remove_idx:
+                    for idx in sorted(remove_idx, reverse=True):
+                        if 1 <= idx <= len(sources):
+                            s = sources[idx - 1]
+                            if s["type"] == "arxiv" and s["id"] in self.cfg.arxiv_ids:
+                                self.cfg.arxiv_ids.remove(s["id"])
+                            if s["type"] == "pdf" and s["id"] in [str(p) for p in self.cfg.pdf_paths]:
+                                self.cfg.pdf_paths = [p for p in self.cfg.pdf_paths if str(p) != s["id"]]
+                            if s["type"] == "markdown" and s["id"] in [str(p) for p in self.cfg.md_paths]:
+                                self.cfg.md_paths = [p for p in self.cfg.md_paths if str(p) != s["id"]]
+                return self.build_outline_once()
+
         if len(sources) == 1:
             meta = {"title": sources[0]["title"], "abstract": sources[0].get("abstract", "")}
         else:
@@ -1352,9 +1497,29 @@ Generate slide #{idx}: {slide_title}
         citations_base: List[str] = []
         web_sources = []
         web_context = ""
-        if self.cfg.user_query and self.cfg.web_search:
+        if self.cfg.user_query and self.cfg.web_search and not (self.cfg.topic or "").strip():
             logger.info("Running web search for query: %s", self.cfg.user_query)
-            web_sources = search_web(self.cfg.user_query, max_results=5)
+            try:
+                if self.cfg.arxiv_only_search:
+                    import arxiv
+
+                    search = arxiv.Search(query=self.cfg.user_query, max_results=5)
+                    web_sources = [
+                        {
+                            "title": r.title,
+                            "url": r.entry_id,
+                            "snippet": (r.summary or "")[:400],
+                        }
+                        for r in search.results()
+                    ]
+                else:
+                    from web_utils import search_research_focused
+
+                    web_sources = search_research_focused(self.cfg.user_query, max_results=5)
+            except Exception:
+                web_sources = []
+        elif (self.cfg.topic or "").strip():
+            logger.info("Skipping outline-stage web search (topic mode).")
             if web_sources:
                 print("\nTop web results:")
                 for i, s in enumerate(web_sources, 1):
@@ -1393,14 +1558,15 @@ Generate slide #{idx}: {slide_title}
             citations_base.extend([f"{s['title']} - {s['url']}" for s in web_sources])
 
         chunks = self.chunk_text(paper_text, 1500)
-        N = min(self.cfg.max_summary_chunks, len(chunks))
+        chunks = self._select_relevant_chunks(chunks, global_feedback=global_feedback)
+        N = len(chunks)
         sums: List[str] = []
 
         logger.info("Summarizing paper (%s chunks)...", N)
         if N == 0:
             raise RuntimeError("No text chunks available for summarization.")
         prev_summary_preview = ""
-        max_workers = min(2, self.cfg.max_llm_workers, N)
+        max_workers = min(self.cfg.max_llm_workers, N)
         if N > 1 and max_workers > 1:
             self._checkpoint("Summarize (parallel)", 0, N)
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -1498,7 +1664,31 @@ Generate slide #{idx}: {slide_title}
             "Slide titles",
             [t for t in titles_obj.get("slide_titles", [])],
         )
-        titles_feedback = self._prompt_feedback("Slide titles feedback")
+        if self.cfg.approve:
+            ans = input("\nApprove slide titles? Type 'y' to approve or enter feedback: ").strip()
+            titles_feedback = "" if ans.lower() in {"y", "yes"} else ans
+            # Optional slide count adjustment
+            adj = input("Change slide count? (enter number or press Enter to keep): ").strip()
+            if adj:
+                try:
+                    new_count = int(adj)
+                    if new_count > 0 and new_count != self.cfg.slide_count:
+                        if new_count > self.cfg.slide_count:
+                            extra = input(
+                                "Add headings/themes to include (comma-separated, optional): "
+                            ).strip()
+                            if extra:
+                                titles_feedback = (titles_feedback + "\n" if titles_feedback else "") + (
+                                    "Add these headings/themes: " + extra
+                                )
+                        self.cfg.slide_count = new_count
+                        titles_feedback = (titles_feedback + "\n" if titles_feedback else "") + (
+                            f"Adjust to exactly {new_count} slide titles."
+                        )
+                except Exception:
+                    pass
+        else:
+            titles_feedback = self._prompt_feedback("Slide titles feedback")
         if titles_feedback:
             revised = self.regenerate_titles_with_feedback(
                 meta,

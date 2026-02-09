@@ -52,3 +52,12 @@ def setup_logging(verbose: bool = False, log_path: Optional[Path] = None) -> Non
         format="%(message)s",
         handlers=handlers,
     )
+    # Silence noisy HTTP client logs (HF hub / httpx / requests / urllib3).
+    for noisy in [
+        "httpx",
+        "requests",
+        "urllib3",
+        "huggingface_hub",
+        "transformers",
+    ]:
+        logging.getLogger(noisy).setLevel(logging.WARNING)

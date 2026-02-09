@@ -34,6 +34,8 @@ class RunConfig:
     include_speaker_notes: bool
     user_query: str
     web_search: bool
+    web_search_providers: List[str]
+    arxiv_only_search: bool
     retry_slides: int
     retry_empty: int
     interactive: bool

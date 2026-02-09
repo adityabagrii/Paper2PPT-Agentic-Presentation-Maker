@@ -468,6 +468,8 @@ def main() -> None:
             include_speaker_notes=with_notes,
             user_query=query.strip(),
             web_search=web_search,
+            web_search_providers=["ddg"],
+            arxiv_only_search=False,
             retry_slides=int(retry_slides),
             retry_empty=3,
             interactive=False,

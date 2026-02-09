@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import re
 import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10,17 +11,19 @@ from typing import Any, Dict, List, Optional, Tuple
 from tqdm import tqdm
 
 try:
-    from .arxiv_utils import extract_arxiv_id
+    from .arxiv_utils import extract_arxiv_id, get_arxiv_pdf_url
     from .llm import safe_invoke
     from .pdf_utils import extract_pdf_content
+    from .models import DeckOutline
     from .web_utils import search_web
     from .flowchart_utils import build_graphviz, build_graphviz_from_nodes_edges, render_graphviz
     from .tex_utils import build_paper_text, find_main_tex_file, flatten_tex
     from .memory_utils import load_journal_for_date, now_iso, upsert_paper
 except Exception:
-    from arxiv_utils import extract_arxiv_id
+    from arxiv_utils import extract_arxiv_id, get_arxiv_pdf_url
     from llm import safe_invoke
     from pdf_utils import extract_pdf_content
+    from models import DeckOutline
     from web_utils import search_web
     from flowchart_utils import build_graphviz, build_graphviz_from_nodes_edges, render_graphviz
     from tex_utils import build_paper_text, find_main_tex_file, flatten_tex
@@ -145,8 +148,10 @@ class Pipeline:
             return
 
         prompt = f"""
-You are preparing a research presentation. Expand the topic into a focused query
-with key sub-questions and keywords. Return a single paragraph query.
+You are preparing a research presentation. Expand the topic into an elaborative,
+critical-analysis query with clear sub-questions, scope, evaluation angles, and
+expected evidence types. Include datasets/benchmarks, methods, metrics, and
+comparative baselines where relevant. Return a single paragraph query (no bullets).
 
 Topic: {self.cfg.topic}
 """.strip()
@@ -162,7 +167,9 @@ Topic: {self.cfg.topic}
                 break
             if ans:
                 refine_prompt = f"""
-Refine the topic query based on user feedback. Return a single paragraph query.
+Refine the topic query based on user feedback. Make it more analytically complete:
+include missing evaluation dimensions, methods, datasets, metrics, baselines, and
+potential failure modes. Return a single paragraph query (no bullets).
 
 Original topic: {self.cfg.topic}
 Current query: {expanded}
@@ -183,8 +190,14 @@ User feedback: {ans}
         except Exception:
             logger.exception("Failed to write query.txt")
 
-        # Sanitize query for web search (strip markdown markers/newlines)
-        clean_query = re.sub(r"[\\*`_#]+", " ", expanded)
+        # Sanitize query for web search (strip markdown markers/newlines and verbose sections)
+        def _strip_query_markers(text: str) -> str:
+            text = re.sub(r"(?is)\\bkeywords?:.*$", " ", text)
+            text = re.sub(r"(?is)\\bquery paragraph\\s*:\\s*", " ", text)
+            return text
+
+        clean_query = _strip_query_markers(expanded)
+        clean_query = re.sub(r"[\\*`_#]+", " ", clean_query)
         clean_query = re.sub(r"\s+", " ", clean_query).strip()
 
         def _keyword_query(text: str, max_terms: int = 12) -> str:
@@ -219,11 +232,11 @@ User feedback: {ans}
                     break
             return " ".join(out)
 
-        short_query = _keyword_query(clean_query)
+        short_query = _keyword_query(clean_query or self.cfg.topic or expanded)
         logger.info("Topic expanded query: %s", expanded)
         logger.info("Web search query (sanitized): %s", clean_query)
         logger.info("Web search query (keywords): %s", short_query)
-        results = search_web(short_query or clean_query, max_results=self.cfg.max_web_results)
+        results: List[dict] = []
         allowed_domains: set[str] = set()
         if self.cfg.topic_allow_domains:
             allowed_domains = set(self.cfg.topic_allow_domains)
@@ -285,52 +298,188 @@ User feedback: {ans}
                 filtered_items = [r for r in filtered_items if _matches_keywords(r)]
             return filtered_items
 
-        results = _filter_results(results)
+        # Ask LLM for search queries and run them first
+        # Derive core terms from the topic for anchored query generation.
+        core_terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9\\-]+", self.cfg.topic)
+        core_terms = [t.lower() for t in core_terms if len(t) > 2]
+        core_terms = list(dict.fromkeys(core_terms))[:6]  # keep it tight
+        core_terms_text = ", ".join(core_terms) if core_terms else self.cfg.topic
 
-        # If empty, ask LLM for search queries and retry
-        if not results:
-            query_prompt = f"""
-Generate 4-6 concise web search queries (short keyword phrases) for this topic.
+        query_prompt = f"""
+Generate 8-12 diverse web search queries (short keyword phrases) that stay strictly
+within this domain. Each query MUST include at least 2-3 of these core topic terms:
+{core_terms_text}
+
+Queries should still vary across:
+- method names / families
+- datasets / benchmarks
+- metrics / evaluation criteria
+- comparisons (e.g., vs. baselines)
+- limitations / failure cases
+
+Avoid vague or generic queries that omit the core topic terms.
 Return ONLY a JSON array of strings.
 
 Topic: {self.cfg.topic}
 """.strip()
-            raw_q = safe_invoke(logger, self.llm, query_prompt, retries=4).strip()
+        def _parse_query_list(raw: str) -> List[str]:
+            if not raw:
+                return []
+            cleaned = raw.strip()
+            # Strip markdown code fences if present.
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```[a-zA-Z0-9]*\\s*", "", cleaned)
+                cleaned = re.sub(r"\\s*```$", "", cleaned)
+                cleaned = cleaned.strip()
             try:
                 import json as _json
 
-                query_list = _json.loads(raw_q)
-                if not isinstance(query_list, list):
-                    query_list = []
+                parsed = _json.loads(cleaned)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed if str(x).strip()]
             except Exception:
-                query_list = []
+                pass
+            # Fallback: extract quoted strings or numbered lines.
+            quoted = re.findall(r'"([^"]+)"', cleaned)
+            if quoted:
+                return [q.strip() for q in quoted if q.strip()]
+            lines = [re.sub(r"^\\s*\\d+\\.?\\s*", "", l).strip() for l in cleaned.splitlines()]
+            return [l for l in lines if l]
 
+        def _filter_queries_to_topic(queries: List[str]) -> List[str]:
+            if not queries:
+                return queries
+            if not core_terms:
+                return queries
+            filtered = []
+            for q in queries:
+                ql = q.lower()
+                hits = sum(1 for t in core_terms if t in ql)
+                if hits >= 2:
+                    filtered.append(q)
+            return filtered or queries
+
+        query_list = []
+        raw_q = ""
+        for attempt in range(1, 4):
+            raw_q = safe_invoke(logger, self.llm, query_prompt, retries=4).strip()
+            query_list = _parse_query_list(raw_q)
+            query_list = _filter_queries_to_topic(query_list)
             if query_list:
-                console = _get_console()
-                if console and Panel:
-                    body = "\n".join([f"{i}. {q}" for i, q in enumerate(query_list, 1)])
-                    console.print(Panel(body, title="QUERIES BY LLM", expand=False))
-                else:
-                    print("\n----------QUERIES BY LLM----------------")
-                    for i, q in enumerate(query_list, 1):
-                        print(f"{i}. {q}")
-                    print("----------------------------------------\n")
-                aggregated = []
-                for q in query_list:
-                    q = str(q).strip()
-                    if not q:
-                        continue
-                    aggregated.extend(search_web(q, max_results=self.cfg.max_web_results))
-                # de-dup
-                seen = set()
-                deduped = []
-                for r in aggregated:
-                    url = r.get("url", "")
-                    if not url or url in seen:
-                        continue
-                    seen.add(url)
-                    deduped.append(r)
-                results = _filter_results(deduped[: self.cfg.max_web_results])
+                break
+            if raw_q:
+                logger.warning(
+                    "LLM search query generation failed (attempt %s/3). Raw output: %s",
+                    attempt,
+                    raw_q,
+                )
+            time.sleep(0.75 * attempt)
+
+        if query_list:
+            console = _get_console()
+            if console and Panel:
+                body = "\n".join([f"{i}. {q}" for i, q in enumerate(query_list, 1)])
+                console.print(Panel(body, title="QUERIES BY LLM", expand=False))
+            else:
+                print("\n----------QUERIES BY LLM----------------")
+                for i, q in enumerate(query_list, 1):
+                    print(f"{i}. {q}")
+                print("----------------------------------------\n")
+            aggregated = []
+            max_attempts = 3
+            for q in query_list:
+                q = str(q).strip()
+                if not q:
+                    continue
+                for attempt in range(1, max_attempts + 1):
+                    logger.info("Web search run (LLM query) %s/%s: %s", attempt, max_attempts, q)
+                    try:
+                        before = len(aggregated)
+                        fetch_limit = min(60, max(self.cfg.max_web_results * 3, self.cfg.max_web_results))
+                        if self.cfg.arxiv_only_search:
+                            import arxiv
+
+                            search = arxiv.Search(query=q, max_results=fetch_limit)
+                            added = []
+                            for r in search.results():
+                                item = {
+                                    "title": r.title,
+                                    "url": r.entry_id,
+                                    "snippet": (r.summary or "")[:400],
+                                }
+                                aggregated.append(item)
+                                added.append(item)
+                            logger.info("arXiv results added: %s", len(aggregated) - before)
+                            if added:
+                                logger.info("arXiv added titles:")
+                                for i, it in enumerate(added, 1):
+                                    logger.info("  %s. %s", i, it.get("title", "").strip())
+                        else:
+                            from web_utils import search_research_focused
+
+                            added = search_research_focused(q, max_results=self.cfg.max_web_results)
+                            aggregated.extend(added)
+                            logger.info("Research search results added: %s", len(aggregated) - before)
+                            if added:
+                                logger.info("Research search added titles:")
+                                for i, it in enumerate(added, 1):
+                                    logger.info("  %s. %s", i, it.get("title", "").strip())
+                        if aggregated:
+                            break
+                    except Exception:
+                        logger.exception("Web search failed for query: %s", q)
+                    time.sleep(1.0 + (attempt - 1) * 0.75)
+            # de-dup
+            seen = set()
+            deduped = []
+            for r in aggregated:
+                url = r.get("url", "")
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                deduped.append(r)
+            results = _filter_results(deduped[: self.cfg.max_web_results])
+
+        # Fallback: use keyword query if LLM queries were empty or returned nothing
+        if not results:
+            fallback_q = short_query or clean_query
+            if fallback_q:
+                for attempt in range(1, 4):
+                    logger.info("Web search run (fallback) %s/3: %s", attempt, fallback_q)
+                    try:
+                        fetch_limit = min(60, max(self.cfg.max_web_results * 3, self.cfg.max_web_results))
+                        if self.cfg.arxiv_only_search:
+                            import arxiv
+
+                            search = arxiv.Search(query=fallback_q, max_results=fetch_limit)
+                            results = [
+                                {
+                                    "title": r.title,
+                                    "url": r.entry_id,
+                                    "snippet": (r.summary or "")[:400],
+                                }
+                                for r in search.results()
+                            ]
+                            logger.info("arXiv results (fallback): %s", len(results))
+                            if results:
+                                logger.info("arXiv fallback titles:")
+                                for i, it in enumerate(results, 1):
+                                    logger.info("  %s. %s", i, it.get("title", "").strip())
+                        else:
+                            from web_utils import search_research_focused
+
+                            results = search_research_focused(fallback_q, max_results=self.cfg.max_web_results)
+                            logger.info("Research search results (fallback): %s", len(results))
+                            if results:
+                                logger.info("Research search fallback titles:")
+                                for i, it in enumerate(results, 1):
+                                    logger.info("  %s. %s", i, it.get("title", "").strip())
+                        results = _filter_results(results)
+                        if results:
+                            break
+                    except Exception:
+                        logger.exception("Web search failed for fallback query.")
+                    time.sleep(1.0 + (attempt - 1) * 0.75)
 
         # Rank results with simple heuristic for transparency
         def _rank_reason(item: dict) -> tuple[int, str]:
@@ -383,6 +532,132 @@ Topic: {self.cfg.topic}
                 ranked.append(r)
             results = sorted(ranked, key=lambda x: x.get("_score", 0), reverse=True)
 
+        # Lightweight topic-term filter to drop obviously irrelevant results.
+        def _topic_term_filter(items: List[dict]) -> List[dict]:
+            if not items or not (self.cfg.topic or "").strip():
+                return items
+            topic_text = " ".join([self.cfg.topic, self.cfg.user_query]).lower()
+            core_terms = set(re.findall(r"[a-z0-9]{3,}", topic_text))
+            # Ensure core video/keyframe terms are present in the filter set.
+            core_terms.update(["video", "videos", "frame", "frames", "keyframe", "keyframes", "sampling"])
+            filtered = []
+            for it in items:
+                text = " ".join([it.get("title", ""), it.get("snippet", ""), it.get("url", "")]).lower()
+                if any(t in text for t in core_terms):
+                    filtered.append(it)
+            return filtered or items
+
+        if results and not self.cfg.topic_must_include:
+            before = len(results)
+            results = _topic_term_filter(results)
+            if len(results) != before:
+                logger.info("Topic term filter: %s -> %s", before, len(results))
+                dropped = [r for r in ranked if r not in results] if 'ranked' in locals() else []
+                for i, r in enumerate(dropped, 1):
+                    logger.info(
+                        "Dropped (topic-term) %s. %s | %s",
+                        i,
+                        r.get("title", "").strip(),
+                        r.get("url", "").strip(),
+                    )
+
+        # Enrich with arXiv metadata (title/abstract) and LLM-filter by relevance.
+        def _llm_filter_results(items: List[dict]) -> List[dict]:
+            if not items:
+                return items
+            # Extract arXiv ids when possible and fetch metadata for LLM decision.
+            enriched = []
+            for s in items:
+                url = s.get("url", "")
+                arxiv_id = ""
+                if "arxiv.org" in (url or ""):
+                    try:
+                        arxiv_id = extract_arxiv_id(url)
+                    except Exception:
+                        arxiv_id = ""
+                enriched.append({**s, "arxiv_id": arxiv_id})
+
+            # Fetch metadata for arXiv items with progress.
+            logger.info("Fetching arXiv metadata for LLM filtering (%s items)...", len(enriched))
+            with tqdm(total=len(enriched), desc="LLM Filter Metadata", ncols=100) as bar:
+                for s in enriched:
+                    if s.get("arxiv_id"):
+                        try:
+                            meta = self.arxiv_client.get_metadata(s["arxiv_id"])
+                            s["title"] = meta.get("title", s.get("title", ""))
+                            s["abstract"] = meta.get("abstract", "")
+                        except Exception:
+                            s.setdefault("abstract", "")
+                    bar.update(1)
+
+            max_items = min(20, len(enriched))
+            lines = []
+            for i, s in enumerate(enriched[:max_items], 1):
+                title = s.get("title", "")
+                abstract = s.get("abstract", "") or s.get("snippet", "")
+                url = s.get("url", "")
+                arxiv_id = s.get("arxiv_id", "")
+                lines.append(f"{i}. {title}\n   {abstract}\n   {url}\n   id:{arxiv_id}")
+            prompt = f"""
+You are filtering web search results for relevance.
+Topic: {self.cfg.topic}
+Return ONLY a JSON array of integers (1-based indices) for results that are clearly relevant.
+If unsure, be conservative and include fewer.
+
+Results:
+{chr(10).join(lines)}
+""".strip()
+            raw = safe_invoke(logger, self.llm, prompt, retries=3).strip()
+            try:
+                import json as _json
+                cleaned = raw.strip()
+                if cleaned.startswith("```"):
+                    cleaned = re.sub(r"^```[a-zA-Z0-9]*\\s*", "", cleaned)
+                    cleaned = re.sub(r"\\s*```$", "", cleaned)
+                    cleaned = cleaned.strip()
+                idxs = _json.loads(cleaned)
+                if not isinstance(idxs, list):
+                    logger.warning("LLM relevance filter returned non-list JSON; using unfiltered results.")
+                    return enriched
+                keep = []
+                for i in idxs:
+                    try:
+                        i = int(i)
+                    except Exception:
+                        continue
+                    if 1 <= i <= max_items:
+                        keep.append(enriched[i - 1])
+                return keep or enriched
+            except Exception:
+                logger.warning("LLM relevance filter failed; using unfiltered results. Raw: %s", raw)
+                return enriched
+
+        if results and (self.cfg.topic or "").strip():
+            before = len(results)
+            pre = list(results)
+            results = _llm_filter_results(results)
+            logger.info("LLM filtered results: %s -> %s", before, len(results))
+            kept = set((r.get("title", ""), r.get("url", "")) for r in results)
+            logger.info("LLM filtered titles (kept):")
+            for i, s in enumerate(results, 1):
+                logger.info("  %s. %s", i, s.get("title", "").strip())
+            for i, s in enumerate(results, 1):
+                logger.info(
+                    "LLM keep %s. %s | %s",
+                    i,
+                    s.get("title", "").strip(),
+                    s.get("url", "").strip(),
+                )
+            for i, s in enumerate(pre, 1):
+                key = (s.get("title", ""), s.get("url", ""))
+                if key not in kept:
+                    logger.info(
+                        "LLM drop %s. %s | %s",
+                        i,
+                        s.get("title", "").strip(),
+                        s.get("url", "").strip(),
+                    )
+
         # Debug output for topic search (after any LLM-query retry)
         out_dir = self.cfg.out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -425,6 +700,15 @@ Topic: {self.cfg.topic}
                     reason = s.get("_reason", "")
                     print(f"{i}. {title}\n   {url}\n   {snippet}\n   reason: {reason}\n")
                 print("----------------------------------------\n")
+            # Always log final filtered results for visibility.
+            logger.info("Final web results after filtering (%s):", len(results))
+            for i, s in enumerate(results, 1):
+                logger.info(
+                    "%s. %s | %s",
+                    i,
+                    s.get("title", "").strip(),
+                    s.get("url", "").strip(),
+                )
         else:
             logger.warning("No web results found for topic search.")
             # Fallback: query arXiv directly for scholarly-only topic mode
@@ -437,11 +721,11 @@ Topic: {self.cfg.topic}
                     arxiv_ids = [r.get_short_id() for r in search.results()]
                     if arxiv_ids:
                         logger.info("arXiv fallback results: %s", len(arxiv_ids))
-                        self.cfg.arxiv_ids = list(dict.fromkeys(self.cfg.arxiv_ids + arxiv_ids))
                         results_path.write_text(
                             "arXiv fallback results:\n" + "\n".join(arxiv_ids) + "\n",
                             encoding="utf-8",
                         )
+                        self.cfg.arxiv_ids = list(dict.fromkeys(self.cfg.arxiv_ids + arxiv_ids))
                         return
                 except Exception:
                     logger.exception("arXiv fallback search failed.")
@@ -452,12 +736,13 @@ Topic: {self.cfg.topic}
             raise RuntimeError(f"No web results found for topic search. {hint}")
 
         arxiv_ids = list(self.cfg.arxiv_ids)
-        pdf_urls = []
+        pdf_urls: List[str] = []
         for r in results:
             url = r.get("url", "")
             if "arxiv.org/abs/" in url or "arxiv.org/pdf/" in url:
                 try:
-                    arxiv_ids.append(extract_arxiv_id(url))
+                    arxiv_id = extract_arxiv_id(url)
+                    arxiv_ids.append(arxiv_id)
                 except Exception:
                     pass
             elif url.lower().endswith(".pdf"):
@@ -1445,10 +1730,14 @@ Slide titles: {[s.title for s in outline.slides]}
 Write the **{sec}** section for the reading notes in markdown.
 
 Rules:
-- Provide 2-3 paragraphs OR 6-10 bullets.
+- Use structured markdown for readability:
+  - Start with a 1-2 sentence overview line.
+  - Include a "Key Points" bullet list (4-6 bullets, bold lead phrases).
+  - Include a short "Evidence/Details" subsection (2-4 bullets or 1 short paragraph).
+  - End with "Implications" bullets (2-3 bullets).
 - Be detailed and specific; explain core concepts clearly.
 - Do NOT use code fences.
-- Only write content for this section (no other headings).
+- Only write content for this section (no other top-level headings).
 - Ensure at least {min_words_required} words.
 
 Title: {ctx.meta.get('title', '')}
@@ -1473,6 +1762,16 @@ Sources:
             return cleaned or "TBD: Section generation failed."
 
         pieces = []
+        header = [
+            f"# {ctx.meta.get('title', 'Reading Notes')}",
+            "",
+            f"**Source:** {ctx.source_label or 'Mixed sources'}",
+            "",
+            "## Contents",
+            *[f"- {s}" for s in sections],
+            "",
+        ]
+        pieces.append("\n".join(header))
         with tqdm(
             sections,
             desc="Reading notes",
@@ -1961,6 +2260,39 @@ Entries:
                     "Resume requested but no paper_context.json or usable progress.json found. "
                     "Falling back to fresh extraction."
                 )
+            if ctx is None:
+                # Try building context from the latest outline JSON in outputs.
+                try:
+                    outline_files = sorted(
+                        resume_out.glob("outline-*.json"),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    if outline_files:
+                        logger.info("Building read context from outline: %s", outline_files[0])
+                        obj = json.loads(outline_files[0].read_text(encoding="utf-8"))
+                        slides = obj.get("slides", []) or []
+                        bullets = []
+                        notes = []
+                        for s in slides:
+                            bullets.extend(s.get("bullets", []) or [])
+                            if s.get("speaker_notes"):
+                                notes.append(s.get("speaker_notes", ""))
+                        merged_summary = "\n".join([*bullets, *notes]).strip()
+                        citations = obj.get("citations", []) or []
+                        sources_block = "\n".join(citations)
+                        ctx = PaperContext(
+                            meta={"title": obj.get("deck_title", "Presentation")},
+                            paper_text=merged_summary,
+                            merged_summary=merged_summary,
+                            sources_block=sources_block,
+                            source_label=obj.get("arxiv_id", ""),
+                            web_context="",
+                            citations=citations,
+                            sources=[],
+                        )
+                except Exception:
+                    logger.exception("Failed to build context from outline JSON.")
         if ctx is None:
             ctx = self.build_paper_context()
 

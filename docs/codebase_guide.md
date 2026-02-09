@@ -156,7 +156,9 @@ Typical outputs:
 - `progress.json`: incremental stage output for resume.
 
 ## Web Search and Citations
-- `web_utils.search_web()` uses DuckDuckGo HTML results to fetch title/snippet/url.
+- Research-focused search aggregates arXiv, Semantic Scholar, Crossref, and OpenReview, then dedupes, scores, and ranks results.
+- Per-provider logs show counts and titles; cached/backoff HTTP reduces rate-limit failures.
+- `--arxiv-only-search` forces arXiv-only retrieval (useful for LaTeX sources).
 - When `--query` is set and `--no-web-search` is not set, web sources are appended as citations in outlines and outputs.
 
 ## Caching and Resume
@@ -188,7 +190,7 @@ If you want to extend the codebase, the most common entry points are:
 
 ## Quick File Reference
 - `pipeline_common.py`: shared dataclasses and constants.
-- `pipeline_outline.py`: outline generation, text chunking, summary, slide title logic, and approval flow.
+- `pipeline_outline.py`: outline generation, text chunking, summary, slide title logic, and approval flow (including source approval and slide-title approval/slide-count adjustments).
 - `pipeline_core.py`: orchestrates modes, resume, chat, diagrams, and outputs.
 - `tex_utils.py`: Beamer rendering and TeX parsing.
 

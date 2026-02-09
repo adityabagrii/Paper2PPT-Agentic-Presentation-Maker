@@ -12,6 +12,7 @@ import requests
 
 ARXIV_SRC_URL = "https://arxiv.org/src/{arxiv_id}"
 ARXIV_EPRINT_URL = "https://arxiv.org/e-print/{arxiv_id}"
+ARXIV_PDF_URL = "https://arxiv.org/pdf/{arxiv_id}.pdf"
 
 
 def extract_arxiv_id(arxiv_link_or_id: str) -> str:
@@ -50,6 +51,24 @@ def get_arxiv_metadata(arxiv_id: str) -> Dict[str, Any]:
         "url": r.entry_id,
         "published": str(r.published),
     }
+
+
+def get_arxiv_pdf_url(arxiv_id: str) -> str:
+    """Get arxiv PDF URL via API when possible, with a safe fallback.
+    
+    Args:
+        arxiv_id (str):
+    
+    Returns:
+        str:
+    """
+    try:
+        r = next(arxiv.Search(id_list=[arxiv_id]).results(), None)
+        if r and getattr(r, "pdf_url", None):
+            return r.pdf_url
+    except Exception:
+        pass
+    return ARXIV_PDF_URL.format(arxiv_id=arxiv_id)
 
 
 def download_and_extract_arxiv_source(arxiv_id: str, out_dir: Path) -> Path:

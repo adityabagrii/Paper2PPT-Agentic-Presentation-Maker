@@ -9,3 +9,6 @@ dist/
 build/
 AgenticPaper2PPT/
 .gitignore
+commands.txt
+check.ipynb
+.cache_research_search/

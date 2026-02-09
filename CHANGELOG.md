@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.3 - 2026-02-09
+- Added research-focused multi-source web search with per-provider logging, dedupe, scoring, and caching/backoff.
+- Added `--arxiv-only-search` flag to force arXiv-only search.
+- Improved topic expansion and diversified query generation with topic-term anchoring.
+- Added LLM-based relevance filtering with arXiv metadata (title/abstract) and detailed keep/drop logs.
+- Added semantic chunk ranking via embeddings (fallback to keyword overlap) and capped chunk processing by `--max-summary-chunks`.
+- Improved read mode formatting and resume-from-outline support.
+- Added source approval flow and slide-title approval with optional slide-count adjustment.
+- Prefer arXiv source downloads with PDF fallback after 2 failed attempts.
+- Reduced noisy HTTP logs (HF hub/requests/httpx) and added progress bars where needed.
+
 ## 0.7.2 - 2026-02-08
 - Added non-slide modes: `--read`, `--viva-mode`, `--describe-experiments`, `--exam-prep`, `--implementation-notes`.
 - Added reproduction checklist mode: `--repro-checklist`.

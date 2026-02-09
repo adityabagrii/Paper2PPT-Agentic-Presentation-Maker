@@ -125,6 +125,8 @@ def print_helper() -> None:
     print("  --out-dir PATH         Override output directory")
     print("  --query TEXT           Guide the presentation theme (web search enabled)")
     print("  --no-web-search        Disable web search")
+    print("  --web-search-providers Comma-separated web search providers (semanticscholar,crossref,openreview,arxiv)")
+    print("  --arxiv-only-search    Use arXiv-only search instead of multi-source research search")
     print("  --use-figures          Enable figure selection and insertion")
     print("  --with-speaker-notes   Generate speaker notes for each slide")
     print("  --skip-llm-sanity      Skip LLM sanity check")
@@ -184,6 +186,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--query", "-q", default="", help="User query to guide the presentation theme")
     p.add_argument("--name", "-n", default="", help="Custom run name for output directory")
     p.add_argument("--no-web-search", "-ws", action="store_true", help="Disable web search even if --query is provided")
+    p.add_argument(
+        "--web-search-providers",
+        default="semanticscholar,crossref,openreview,arxiv",
+        help="Comma-separated list: semanticscholar,crossref,openreview,arxiv (or 'all')",
+    )
+    p.add_argument(
+        "--arxiv-only-search",
+        action="store_true",
+        help="Use arXiv-only search instead of multi-source research search",
+    )
     p.add_argument("--retry-slides", "-rs", type=int, default=3, help="Retry count for slide generation")
     p.add_argument("--retry-empty", "-re", type=int, default=3, help="Retry count for empty LLM outputs")
     p.add_argument("--interactive", "-I", action="store_true", help="Enable interactive checkpoints to allow aborting")
@@ -225,13 +237,13 @@ def parse_args() -> argparse.Namespace:
         help="Allowlist domains for topic mode (repeatable or comma-separated)",
     )
     p.add_argument(
-        "--diagram-style",
+        "--diagram-style", "-ds",
         default="flowchart",
         choices=["flowchart", "block", "sequence", "dag"],
         help="Default diagram style for method slides",
     )
-    p.add_argument("--require-evidence", action="store_true", help="Require evidence tags for claims")
-    p.add_argument("--diagram-intent-aware", action="store_true", help="Generate intent-driven diagrams after titles")
+    p.add_argument("--require-evidence", "-evidence", action="store_true", help="Require evidence tags for claims")
+    p.add_argument("--diagram-intent-aware", "-dia", action="store_true", help="Generate intent-driven diagrams after titles")
     p.add_argument("--auto-comparisons", action="store_true", help="Auto-add comparison slides")
     p.add_argument("--baseline-framing", action="store_true", help="Add baseline framing prompts on experiment slides")
     p.add_argument("--quant-results", action="store_true", help="Add quantitative results table slide")
@@ -312,6 +324,26 @@ def _split_list_args(values: list[str]) -> list[str]:
             s = s[1:-1]
         parts = [p.strip() for p in s.replace(";", ",").split(",")]
         out.extend([p for p in parts if p])
+    return out
+
+
+def _parse_web_search_providers(raw: str) -> list[str]:
+    """Parse web search providers."""
+    if not raw:
+        return ["ddg"]
+    providers = _split_list_args([raw])
+    normalized: list[str] = []
+    for p in providers:
+        key = p.strip().lower().replace("-", "").replace("_", "")
+        if not key:
+            continue
+        normalized.append(key)
+    if "all" in normalized:
+        return ["semanticscholar", "crossref", "openreview", "arxiv"]
+    allowed = {"semanticscholar", "crossref", "openreview", "arxiv"}
+    out = [p for p in normalized if p in allowed]
+    if not out:
+        return ["ddg"]
     return out
 
 
@@ -517,6 +549,8 @@ def main() -> int:
         include_speaker_notes=args.with_speaker_notes,
         user_query=(args.query or "").strip(),
         web_search=not args.no_web_search,
+        web_search_providers=_parse_web_search_providers(args.web_search_providers),
+        arxiv_only_search=bool(args.arxiv_only_search),
         retry_slides=max(1, args.retry_slides),
         retry_empty=max(1, args.retry_empty),
         interactive=args.interactive,
