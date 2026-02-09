@@ -13,6 +13,7 @@
 - Added LLM-query web search for `--query` runs with configurable `--max-web-queries`.
 - Added web-source approval gate after query search.
 - Added post-run revision tools: `--revise-with-figures`, `--revise-with-diagrams`, and `--edit-run`.
+- Added targets for post-run figures/diagrams (`--revise-figures-target`, `--revise-diagrams-target`).
 
 ## 0.7.2 - 2026-02-08
 - Added non-slide modes: `--read`, `--viva-mode`, `--describe-experiments`, `--exam-prep`, `--implementation-notes`.

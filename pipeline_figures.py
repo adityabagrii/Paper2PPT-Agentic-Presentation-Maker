@@ -172,12 +172,28 @@ Available figures (filename: caption):
 {catalog}
 """.strip()
 
+        def _sanitize_json(s: str) -> str:
+            if not s:
+                return s
+            cleaned = s.strip()
+            # Strip code fences if present.
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```[a-zA-Z0-9]*\\s*", "", cleaned)
+                cleaned = re.sub(r"\\s*```$", "", cleaned)
+                cleaned = cleaned.strip()
+            # Trim to outermost JSON object if extra text exists.
+            if "{" in cleaned and "}" in cleaned:
+                cleaned = cleaned[cleaned.find("{") : cleaned.rfind("}") + 1]
+            # Remove trailing commas before } or ]
+            cleaned = re.sub(r",\\s*([}\\]])", r"\\1", cleaned)
+            return cleaned
+
         raw = ""
         js = None
         obj = None
         for attempt in range(1, 4):
             raw = safe_invoke(logger, llm, prompt, retries=6)
-            js = OutlineBuilder.try_extract_json(raw) or raw
+            js = _sanitize_json(OutlineBuilder.try_extract_json(raw) or raw)
             logger.info("Raw figure plan output (attempt %s): %s", attempt, js)
             try:
                 obj = json.loads(js)
@@ -191,7 +207,7 @@ Available figures (filename: caption):
                     + str(js)
                 )
                 raw = safe_invoke(logger, llm, fix_prompt, retries=4)
-                js = OutlineBuilder.try_extract_json(raw) or raw
+                js = _sanitize_json(OutlineBuilder.try_extract_json(raw) or raw)
                 try:
                     obj = json.loads(js)
                     break

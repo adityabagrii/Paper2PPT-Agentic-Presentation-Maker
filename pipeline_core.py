@@ -907,18 +907,38 @@ Speaker notes: {slide.get("speaker_notes","")}
 Topic hint: {topic_hint}
 """.strip()
         raw = safe_invoke(logger, self.llm, prompt, retries=6)
+        def _sanitize_json(s: str) -> str:
+            if not s:
+                return s
+            cleaned = s.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```[a-zA-Z0-9]*\\s*", "", cleaned)
+                cleaned = re.sub(r"\\s*```$", "", cleaned)
+                cleaned = cleaned.strip()
+            if "{" in cleaned and "}" in cleaned:
+                cleaned = cleaned[cleaned.find("{") : cleaned.rfind("}") + 1]
+            cleaned = re.sub(r",\\s*([}\\]])", r"\\1", cleaned)
+            return cleaned
+
+        obj = None
+        raw_clean = _sanitize_json(raw)
         try:
-            obj = json.loads(raw)
+            obj = json.loads(raw_clean)
             if not isinstance(obj, dict):
                 raise ValueError("flowchart JSON not dict")
         except Exception:
             fix = safe_invoke(
                 logger,
                 self.llm,
-                "Return ONLY valid JSON for the schema. Fix this:\n" + raw[:1800],
+                "Return ONLY valid JSON for the schema. Fix this:\n" + raw_clean[:1800],
                 retries=6,
             )
-            obj = json.loads(fix)
+            fix_clean = _sanitize_json(fix)
+            try:
+                obj = json.loads(fix_clean)
+            except Exception:
+                logger.warning("Flowchart JSON parse failed; using empty flowchart.")
+                obj = {"steps": [], "structure": "linear", "caption": ""}
         obj.setdefault("steps", [])
         obj.setdefault("structure", "linear")
         obj.setdefault("caption", "")
@@ -1064,7 +1084,8 @@ Topic hint: {topic_hint}
         if not fig_assets:
             return
 
-        fig_plan = self.figure_planner.plan_with_llm(self.llm, outline, fig_assets, max_figs=12)
+        max_figs = len(fig_assets)
+        fig_plan = self.figure_planner.plan_with_llm(self.llm, outline, fig_assets, max_figs=max_figs)
         resolved = self.figure_planner.materialize(fig_plan, fig_assets, self.cfg.out_dir)
 
         for s in resolved.get("slides", []):
@@ -2759,14 +2780,16 @@ Question: {q}
 
         return outputs
 
-    def revise_with_figures(self, run_dir: Path) -> tuple[Path, Optional[Path]]:
+    def revise_with_figures(
+        self, run_dir: Path, target: str = "slides"
+    ) -> tuple[Optional[Path], Optional[Path], Optional[Path]]:
         """Revise an existing run by attaching figures from LaTeX sources.
 
         Args:
             run_dir (Path): Run directory containing work/ and outputs/
 
         Returns:
-            (tex_path, pdf_path)
+            (tex_path, pdf_path, notes_path)
         """
         base_dir = Path(run_dir).expanduser().resolve()
         if base_dir.name in {"outputs", "work"}:
@@ -2786,6 +2809,13 @@ Question: {q}
             raise RuntimeError("No outline-*.json found in outputs/ to revise.")
 
         outline_dict = json.loads(outline_path.read_text(encoding="utf-8"))
+        # Some outlines store flowchart as None; normalize before validation.
+        try:
+            for s in outline_dict.get("slides", []):
+                if isinstance(s, dict) and s.get("flowchart", "MISSING") is None:
+                    s.pop("flowchart", None)
+        except Exception:
+            pass
         outline = DeckOutline.model_validate(outline_dict)
 
         # Infer arXiv IDs from work dir
@@ -2808,21 +2838,66 @@ Question: {q}
             self.cfg.work_dir = work_dir
             self.cfg.out_dir = out_dir
             self.cfg.arxiv_ids = arxiv_ids
-            self._attach_figures_from_arxiv_sources(outline)
+            if target in {"slides", "auto"}:
+                self._attach_figures_from_arxiv_sources(outline)
         finally:
             self.cfg.work_dir = orig_work
             self.cfg.out_dir = orig_out
             self.cfg.arxiv_ids = orig_arxiv
 
         # Save revised outline
+        notes_path = None
+        if target in {"reading", "auto"}:
+            notes_path = out_dir / "reading_notes.md"
+            if notes_path.exists() and arxiv_ids:
+                logger.info("Attaching figures to reading notes...")
+                # Build figure assets once
+                fig_assets = []
+                for arxiv_id in arxiv_ids:
+                    try:
+                        arxiv_work = work_dir / f"arxiv_{arxiv_id}"
+                        src_dir = arxiv_work / "arxiv_source"
+                        if not src_dir.exists():
+                            src_dir = self.arxiv_client.download_source(arxiv_id, arxiv_work)
+                        main_tex = find_main_tex_file(src_dir)
+                        flat = flatten_tex(main_tex, max_files=120)
+                        fig_assets.extend(self.figure_planner.extract_figures(flat, src_dir))
+                    except Exception:
+                        logger.exception("Skipping figure extraction for arXiv: %s", arxiv_id)
+                        continue
+                if fig_assets:
+                    # Build section titles from reading notes
+                    sections = [ln.lstrip("#").strip() for ln in notes_path.read_text(encoding="utf-8").splitlines() if ln.startswith("## ")]
+                    if not sections:
+                        sections = ["Reading Notes"]
+                    class _Outline:
+                        def __init__(self, titles):
+                            self.slides = [{"title": t} for t in titles]
+                    pseudo = _Outline(sections)
+                    fig_plan = self.figure_planner.plan_with_llm(self.llm, pseudo, fig_assets, max_figs=len(fig_assets))
+                    resolved = self.figure_planner.materialize(fig_plan, fig_assets, out_dir)
+                    if resolved.get("slides"):
+                        md = notes_path.read_text(encoding="utf-8").rstrip()
+                        md += "\n\n## Figures\n"
+                        for s in resolved.get("slides", []):
+                            for g in s.get("figures", []):
+                                rel = g.get("file", "")
+                                cap = g.get("caption", "")
+                                if rel:
+                                    md += f"\n![{cap}]({rel})\n"
+                                    if cap:
+                                        md += f"_Caption: {cap}_\n"
+                        notes_path = notes_path.with_name("reading_notes_with_figures.md")
+                        notes_path.write_text(md.strip() + "\n", encoding="utf-8")
+
         revised_path = out_dir / "outline-figures.json"
         revised_path.write_text(json.dumps(outline.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
 
-        tex_path, pdf_path = self.renderer.render(outline, out_dir)
-        return tex_path, pdf_path
+        tex_path, pdf_path = self.renderer.render(outline, out_dir) if target in {"slides", "auto"} else (None, None)
+        return tex_path, pdf_path, notes_path
 
     def revise_with_diagrams(
-        self, run_dir: Path
+        self, run_dir: Path, target: str = "auto"
     ) -> tuple[Optional[Path], Optional[Path], Optional[Path]]:
         """Revise an existing run by generating and attaching diagrams.
 
@@ -2875,7 +2950,7 @@ Question: {q}
         pdf_path = None
         notes_path = None
 
-        if outline_path:
+        if outline_path and target in {"slides", "auto"}:
             outline_dict = json.loads(outline_path.read_text(encoding="utf-8"))
             outline = DeckOutline.model_validate(outline_dict)
 
@@ -2902,7 +2977,8 @@ Question: {q}
             revised_path = out_dir / "outline-diagrams.json"
             revised_path.write_text(json.dumps(outline.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
             tex_path, pdf_path = self.renderer.render(outline, out_dir)
-        else:
+
+        if target in {"reading", "auto"}:
             notes_path = out_dir / "reading_notes.md"
             if notes_path.exists() and ctx:
                 logger.info("Adding diagrams to existing reading notes...")
@@ -2910,6 +2986,7 @@ Question: {q}
                 if diagrams:
                     md = notes_path.read_text(encoding="utf-8").rstrip()
                     md = self._insert_section_diagrams(md, diagrams)
+                    notes_path = notes_path.with_name("reading_notes_with_diagrams.md")
                     notes_path.write_text(md.strip() + "\n", encoding="utf-8")
             else:
                 logger.warning("No outline or reading notes found to revise.")
@@ -3007,3 +3084,65 @@ Deck JSON:
                 raise RuntimeError(f"{fname} not found in outputs/")
             outputs.append(_edit_markdown(p, target))
             return outputs
+
+    def remove_media(self, run_dir: Path, target: str = "auto") -> List[Path]:
+        """Remove all figures/diagrams from existing outputs."""
+        base_dir = Path(run_dir).expanduser().resolve()
+        if base_dir.name in {"outputs", "work"}:
+            base_dir = base_dir.parent
+        out_dir = base_dir / "outputs"
+        if not out_dir.exists():
+            raise RuntimeError(f"outputs/ not found under: {base_dir}")
+
+        outputs: List[Path] = []
+
+        # Slides: remove from outline JSON and re-render
+        outline_path = None
+        outlines = sorted(out_dir.glob("outline-*.json"), key=lambda p: p.stat().st_mtime)
+        if outlines and target in {"auto", "slides"}:
+            outline_path = outlines[-1]
+            outline_dict = json.loads(outline_path.read_text(encoding="utf-8"))
+            outline = DeckOutline.model_validate(outline_dict)
+            for sl in outline.slides:
+                sl.generated_images = []
+                sl.image_captions = []
+                sl.flowchart_images = []
+                sl.flowchart = None
+            revised_path = out_dir / "outline-no-media.json"
+            revised_path.write_text(json.dumps(outline.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
+            outputs.append(revised_path)
+            tex_path, pdf_path = self.renderer.render(outline, out_dir)
+            outputs.append(tex_path)
+            if pdf_path:
+                outputs.append(pdf_path)
+            if target == "slides":
+                return outputs
+
+        # Notes: strip image markdown
+        doc_map = {
+            "reading": "reading_notes.md",
+            "implementation": "implementation_notes.md",
+            "experiment": "experiment_description.md",
+            "repro": "reproduction_checklist.md",
+            "viva": "viva_notes.md",
+            "exam": "exam_prep.md",
+        }
+        targets = [target] if target != "auto" else list(doc_map.keys())
+        for key in targets:
+            fname = doc_map.get(key)
+            if not fname:
+                continue
+            p = out_dir / fname
+            if not p.exists():
+                continue
+            md = p.read_text(encoding="utf-8")
+            # remove markdown image blocks and captions
+            md = re.sub(r"!\\[[^\\]]*\\]\\([^\\)]+\\)\\n?", "", md)
+            md = re.sub(r"_Caption:.*?_\\n?", "", md)
+            out_path = p.with_name(p.stem + "_no_media.md")
+            out_path.write_text(md.strip() + "\n", encoding="utf-8")
+            outputs.append(out_path)
+
+        if not outputs:
+            raise RuntimeError("No outputs found to remove media from.")
+        return outputs

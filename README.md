@@ -364,6 +364,8 @@ These flags make decks more review-ready and diagram-heavy:
 - `--revise-with-diagrams /path/to/run` regenerates and inserts diagrams into an existing deck or notes.
 - `--edit-run /path/to/run --edit-instructions "..."` edits an existing run without recomputing sources.
 - Optional: `--edit-target {slides|reading|implementation|experiment|repro|viva|exam}`
+- Optional: `--revise-figures-target {slides|reading|auto}` to target slides vs reading notes.
+- Optional: `--revise-diagrams-target {slides|reading|auto}` to target slides vs reading notes.
 
 ## Topic-Only Research Mode
 You can start from a topic instead of providing sources. ResearchOS will:
@@ -526,6 +528,8 @@ Notes on structure:
 - `--quant-results` add a quantitative results table slide (numbers pulled from sources)
 - `--revise-with-figures` post-run attach LaTeX figures based on captions + slide titles
 - `--revise-with-diagrams` post-run regenerate and insert diagrams into an existing deck/notes
+- `--revise-figures-target` choose where to attach figures (`slides|reading|auto`)
+- `--revise-diagrams-target` choose where to attach diagrams (`slides|reading|auto`)
 - `--edit-run` edit an existing run without recomputing sources (requires `--edit-instructions`)
 - `--edit-instructions` edit instructions for `--edit-run`
 - `--edit-target` edit target (`auto|slides|reading|implementation|experiment|repro|viva|exam`)

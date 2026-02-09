@@ -133,7 +133,8 @@ class Renderer:
         fig_assets = fig_planner.extract_figures(flat, src_dir)
         logger.info("Figures found: %s", len(fig_assets))
 
-        fig_plan = fig_planner.plan_with_llm(llm, outline, fig_assets, max_figs=12)
+        max_figs = len(fig_assets)
+        fig_plan = fig_planner.plan_with_llm(llm, outline, fig_assets, max_figs=max_figs)
         resolved_fig_plan = fig_planner.materialize(fig_plan, fig_assets, out_dir)
 
         logger.info("Rendering Beamer LaTeX (with figures where valid)...")

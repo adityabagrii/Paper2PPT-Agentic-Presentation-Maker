@@ -79,6 +79,8 @@ RunConfig fields:
 - `quant_results`: generate quantitative results table.
 - `revise_with_figures_path`: post-run figure attachment.
 - `revise_with_diagrams_path`: post-run diagram attachment.
+- `revise_with_figures_target`: target for figure attachment (slides/reading/auto).
+- `revise_with_diagrams_target`: target for diagram attachment (slides/reading/auto).
 - `edit_run_path`: edit an existing run without recompute.
 - `edit_instructions`: edit instructions for existing outputs.
 - `edit_target`: edit target selector.

@@ -77,9 +77,13 @@ class RunConfig:
     figures_only: bool
     revise_with_figures_path: Optional[Path]
     revise_with_diagrams_path: Optional[Path]
+    revise_with_figures_target: str
+    revise_with_diagrams_target: str
     edit_run_path: Optional[Path]
     edit_instructions: str
     edit_target: str
+    remove_media_path: Optional[Path]
+    remove_media_target: str
 
 
 @dataclass
